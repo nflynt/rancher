@@ -80,6 +80,8 @@ func main() {
 				bindingErr = multierror.Append(bindingErr, err)
 			}
 			err = bindingErr
+		} else if os.Getenv("AD_GUID_CLEANUP") == "true" {
+			err = clean.ListAdUsers(nil)
 		} else {
 			err = run(ctx)
 		}
