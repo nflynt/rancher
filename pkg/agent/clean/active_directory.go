@@ -238,7 +238,7 @@ func ListAdUsers(clientConfig *restclient.Config) error {
 			//   probably be typed accordingly. If the LDAP connection has failed, all future lookups will also fail,
 			//   so we either need to re-establish the connection or die.
 			// TODO: Missing upstream user case: What action should we take here?
-			logrus.Errorf("[%v] failed to look up DN with: %v", listAdUsersOperation, err)
+			logrus.Errorf("[%v] failed to look up DN with: %v, taking no action.", listAdUsersOperation, err)
 		} else {
 			if dryRun {
 				// TODO: should we bother to simulate other aspects of the migration, like permissions bindings?
@@ -249,10 +249,33 @@ func ListAdUsers(clientConfig *restclient.Config) error {
 			// Happy path: we have a local GUID user and an upstream DN to map them to. Make that change,
 			// and then kick off all the relevant cleanup logic for this user's owned bindings.
 			// TODO: said happy path
+			replaceGuidPrincipalWithDn(&user, dn)
+			// yeah I don't trust that; debug time!
+			logrus.Infof("[%v] User '%v' has new principals:", listAdUsersOperation, user.Name)
+			for _, principalId := range user.PrincipalIDs {
+				logrus.Infof("[%v]     '%v'", listAdUsersOperation, principalId)
+			}
+			logrus.Infof("[%v] WOULD SAVE HERE", listAdUsersOperation)
+			// ... okay, moment of truth then. Let's save and see what happens!
+			_, err = sc.Management.Users("").Update(&user)
+			if err != nil {
+				logrus.Errorf("[%v] Failed to save modified user '%v' with: %v", listAdUsersOperation, user.Name, err)
+			}
 		}
 	}
 
 	return nil
+}
+
+func replaceGuidPrincipalWithDn(user *v3.User, dn string) {
+	var principalIDs []string
+	for _, principalId := range user.PrincipalIDs {
+		if !strings.HasPrefix(principalId, "activedirectory_user://") {
+			principalIDs = append(principalIDs, principalId)
+		}
+	}
+	principalIDs = append(principalIDs, "activedirectory_user://"+dn)
+	user.PrincipalIDs = principalIDs
 }
 
 func isAdUser(user *v3.User) bool {
