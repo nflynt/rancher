@@ -214,29 +214,41 @@ func ListAdUsers(clientConfig *restclient.Config) error {
 	users, err := sc.Management.Users("").List(metav1.ListOptions{})
 
 	for _, user := range users.Items {
-		logrus.Infof("[%v] Found user with name: %v", listAdUsersOperation, user.Name)
-		for _, principalId := range user.PrincipalIDs {
-			logrus.Infof("[%v] Has principal ID: %v", listAdUsersOperation, principalId)
+		if !isAdUser(&user) {
+			logrus.Debugf("[%v] User '%v' has no AD principals, skipping", listAdUsersOperation, user.Name)
+			continue
 		}
-		logrus.Infof("[%v] UID: %v, username: %v", listAdUsersOperation, user.UID, user.Username)
-		if isAdUser(&user) {
-			logrus.Infof("[%v] Appears to be an AD user!", listAdUsersOperation)
-			principalId := adPrincipalId(&user)
-			if isGuid(principalId) {
-				// TODO: guard on dry run!
-				logrus.Infof("[%v] Found AD user %v with GUID principalId %v, let's try a DN lookup", listAdUsersOperation, user.Name, principalId)
-				guid, _, err := getExternalIdAndScope(principalId)
-				if err != nil {
-					logrus.Errorf("[%v] somehow failed to extract ID from principal!? %v", listAdUsersOperation, err)
-				} else {
-					dn, err := findDistinguishedName(guid, adConfig)
-					if err != nil {
-						logrus.Errorf("[%v] failed to look up DN with: %v", listAdUsersOperation, err)
-					} else {
-						logrus.Infof("[%v] GOT DISTINGUISHED NAME: %v", listAdUsersOperation, dn)
-					}
-				}
+		principalId := adPrincipalId(&user)
+		logrus.Debugf("[%v] Processing AD User '%v' with principal ID: '%v'", listAdUsersOperation, user.Name, principalId)
+		if !isGuid(principalId) {
+			logrus.Debugf("[%v] '%v' Does not appear to be a GUID-based principal ID, taking no action.", listAdUsersOperation, principalId)
+			continue
+		}
+		logrus.Infof("[%v] Found AD user %v with GUID principalId %v, let's try a DN lookup", listAdUsersOperation, user.Name, principalId)
+		guid, _, err := getExternalIdAndScope(principalId)
+		if err != nil {
+			// This really shouldn't be possible to hit, since isGuid will fail to parse anything that would
+			// cause getExternalIdAndScope to choke on the input, but for maximum safety we'll handle it anyway.
+			logrus.Errorf("[%v] Failed to extract ID from principal '%v', cannot process this user! (%v)", listAdUsersOperation, err, user.Name)
+			continue
+		}
+		dn, err := findDistinguishedName(guid, adConfig)
+		if err != nil {
+			// TODO: Need to distinguish between missing user and failed LDAP connection. The error result should
+			//   probably be typed accordingly. If the LDAP connection has failed, all future lookups will also fail,
+			//   so we either need to re-establish the connection or die.
+			// TODO: Missing upstream user case: What action should we take here?
+			logrus.Errorf("[%v] failed to look up DN with: %v", listAdUsersOperation, err)
+		} else {
+			if dryRun {
+				// TODO: should we bother to simulate other aspects of the migration, like permissions bindings?
+				logrus.Infof("[%v] Local user with GUID '%v' maps to upstream user with DN: '%v'. Would migrate here. (DRY RUN)", listAdUsersOperation, guid, dn)
+				continue
 			}
+			logrus.Infof("[%v] Local user with GUID '%v' maps to upstream user with DN: '%v'. Will proceed to migrate.", listAdUsersOperation, guid, dn)
+			// Happy path: we have a local GUID user and an upstream DN to map them to. Make that change,
+			// and then kick off all the relevant cleanup logic for this user's owned bindings.
+			// TODO: said happy path
 		}
 	}
 
