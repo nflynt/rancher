@@ -12,9 +12,15 @@ import (
 	"bytes"
 	"crypto/x509"
 	"fmt"
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"os"
+	"strings"
+
 	ldapv3 "github.com/go-ldap/ldap/v3"
 	"github.com/mitchellh/mapstructure"
 	"github.com/pkg/errors"
+	"github.com/rancher/norman/httperror"
 	"github.com/rancher/norman/store/proxy"
 	v3 "github.com/rancher/rancher/pkg/apis/management.cattle.io/v3"
 	"github.com/rancher/rancher/pkg/auth/providers/common"
@@ -24,16 +30,18 @@ import (
 	"github.com/rancher/wrangler/pkg/ratelimit"
 	"github.com/sirupsen/logrus"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	restclient "k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
-	"os"
-	"strings"
 )
 
 const (
-	listAdUsersOperation   = "list-ad-users"
-	migrateAdUserOperation = "migrate-ad-user"
+	listAdUsersOperation     = "list-ad-users"
+	migrateAdUserOperation   = "migrate-ad-user"
+	activeDirectoryPrefix    = "activedirectory_user://"
+	statusConfigMapName      = "ad-guid-migration"
+	statusConfigMapNamespace = "cattle-system"
 )
 
 func scaledContext(restConfig *restclient.Config) (*config.ScaledContext, error) {
@@ -148,6 +156,9 @@ func EscapeUUID(s string) string {
 
 func findDistinguishedName(guid string, adConfig *v3.ActiveDirectoryConfig) (string, error) {
 	caPool, err := newCAPool(adConfig.Certificate)
+	if err != nil {
+		return "", fmt.Errorf("unable to create caPool: %v", err)
+	}
 
 	lConn, err := ldapConnection(adConfig, caPool)
 	if err != nil {
@@ -172,7 +183,7 @@ func findDistinguishedName(guid string, adConfig *v3.ActiveDirectoryConfig) (str
 	}
 
 	if len(result.Entries) < 1 {
-		return "", fmt.Errorf("cannot locate user information for %s", search.Filter)
+		return "", httperror.NewAPIError(httperror.NotFound, fmt.Sprintf("%v not found", query))
 	} else if len(result.Entries) > 1 {
 		return "", fmt.Errorf("ldap user search found more than one result")
 	}
@@ -211,7 +222,15 @@ func ListAdUsers(clientConfig *restclient.Config) error {
 		return err
 	}
 
+	err = updateMigrationStatus(sc, "ad-guid-migration-status", "Running")
+	if err != nil {
+		return fmt.Errorf("unable to update migration status configmap: %v", err)
+	}
+
 	users, err := sc.Management.Users("").List(metav1.ListOptions{})
+	if err != nil {
+		return fmt.Errorf("unable to fetch user list: %v", err)
+	}
 
 	for _, user := range users.Items {
 		if !isAdUser(&user) {
@@ -238,17 +257,30 @@ func ListAdUsers(clientConfig *restclient.Config) error {
 			//   probably be typed accordingly. If the LDAP connection has failed, all future lookups will also fail,
 			//   so we either need to re-establish the connection or die.
 			// TODO: Missing upstream user case: What action should we take here?
-			logrus.Errorf("[%v] failed to look up DN with: %v, taking no action.", listAdUsersOperation, err)
-		} else {
-			if dryRun {
-				// TODO: should we bother to simulate other aspects of the migration, like permissions bindings?
-				logrus.Infof("[%v] Local user with GUID '%v' maps to upstream user with DN: '%v'. Would migrate here. (DRY RUN)", listAdUsersOperation, guid, dn)
+			var apiError *httperror.APIError
+			if errors.As(err, &apiError) && httperror.IsNotFound(apiError) {
+				logrus.Infof("AD user does not exist, skipping migration for user: %v", err)
 				continue
 			}
+			logrus.Errorf("[%v] failed to look up DN with: %v", listAdUsersOperation, err)
+		} else {
 			logrus.Infof("[%v] Local user with GUID '%v' maps to upstream user with DN: '%v'. Will proceed to migrate.", listAdUsersOperation, guid, dn)
 			// Happy path: we have a local GUID user and an upstream DN to map them to. Make that change,
 			// and then kick off all the relevant cleanup logic for this user's owned bindings.
 			// TODO: said happy path
+			dnPrincipal := activeDirectoryPrefix + dn
+			err := migrateTokens(user.Name, dnPrincipal, sc, dryRun)
+			if err != nil {
+				return fmt.Errorf("unable to migrate token: %v", err)
+			}
+			err = migrateCRTB(guid, dnPrincipal, sc, dryRun)
+			if err != nil {
+				return fmt.Errorf("unable to migrate CRTB: %v", err)
+			}
+			err = migratePRTB(guid, dnPrincipal, sc, dryRun)
+			if err != nil {
+				return fmt.Errorf("unable to migrate PRTB: %v", err)
+			}
 			replaceGuidPrincipalWithDn(&user, dn)
 			// yeah I don't trust that; debug time!
 			logrus.Infof("[%v] User '%v' has new principals:", listAdUsersOperation, user.Name)
@@ -257,30 +289,37 @@ func ListAdUsers(clientConfig *restclient.Config) error {
 			}
 			logrus.Infof("[%v] WOULD SAVE HERE", listAdUsersOperation)
 			// ... okay, moment of truth then. Let's save and see what happens!
-			_, err = sc.Management.Users("").Update(&user)
-			if err != nil {
-				logrus.Errorf("[%v] Failed to save modified user '%v' with: %v", listAdUsersOperation, user.Name, err)
+			if dryRun {
+				logrus.Infof("Dry Run: skipping user update %v", user.Name)
+			} else {
+				_, err = sc.Management.Users("").Update(&user)
+				if err != nil {
+					logrus.Errorf("[%v] Failed to save modified user '%v' with: %v", listAdUsersOperation, user.Name, err)
+				}
 			}
 		}
 	}
-
+	err = updateMigrationStatus(sc, "ad-guid-migration-status", "Finished")
+	if err != nil {
+		return fmt.Errorf("unable to update migration status configmap: %v", err)
+	}
 	return nil
 }
 
 func replaceGuidPrincipalWithDn(user *v3.User, dn string) {
 	var principalIDs []string
 	for _, principalId := range user.PrincipalIDs {
-		if !strings.HasPrefix(principalId, "activedirectory_user://") {
+		if !strings.HasPrefix(principalId, activeDirectoryPrefix) {
 			principalIDs = append(principalIDs, principalId)
 		}
 	}
-	principalIDs = append(principalIDs, "activedirectory_user://"+dn)
+	principalIDs = append(principalIDs, activeDirectoryPrefix+dn)
 	user.PrincipalIDs = principalIDs
 }
 
 func isAdUser(user *v3.User) bool {
 	for _, principalId := range user.PrincipalIDs {
-		if strings.HasPrefix(principalId, "activedirectory_user://") {
+		if strings.HasPrefix(principalId, activeDirectoryPrefix) {
 			return true
 		}
 	}
@@ -289,7 +328,7 @@ func isAdUser(user *v3.User) bool {
 
 func adPrincipalId(user *v3.User) string {
 	for _, principalId := range user.PrincipalIDs {
-		if strings.HasPrefix(principalId, "activedirectory_user://") {
+		if strings.HasPrefix(principalId, activeDirectoryPrefix) {
 			return principalId
 		}
 	}
@@ -316,4 +355,136 @@ func getExternalIdAndScope(principalID string) (string, string, error) {
 	scope := parts[0]
 	externalID := strings.TrimPrefix(parts[1], "//")
 	return externalID, scope, nil
+}
+
+func migrateTokens(userName string, newPrincipalID string, sc *config.ScaledContext, dryRun bool) error {
+	tokenLabelSelector := labels.SelectorFromSet(labels.Set{
+		"authn.management.cattle.io/token-userId": userName,
+	})
+	tokenListOptions := metav1.ListOptions{
+		LabelSelector: tokenLabelSelector.String(),
+	}
+	tokenInterface := sc.Management.Tokens("")
+
+	tokens, err := tokenInterface.List(tokenListOptions)
+	if err != nil {
+		return fmt.Errorf("failed to fetch tokens: %w", err)
+	}
+
+	for _, userToken := range tokens.Items {
+		userToken.UserPrincipal.Name = newPrincipalID
+		if dryRun {
+			logrus.Infof("Dry Run:  Skipping update of %s", userToken.Name)
+		} else {
+			_, err := tokenInterface.Update(&userToken)
+			if err != nil {
+				logrus.Errorf("unable to update token %v for principalId %v: %v", userToken.Name, newPrincipalID, err)
+			}
+		}
+	}
+	return nil
+}
+
+func migrateCRTB(guid string, newPrincipalID string, sc *config.ScaledContext, dryRun bool) error {
+	crtbInterface := sc.Management.ClusterRoleTemplateBindings("")
+	crtbList, err := crtbInterface.List(metav1.ListOptions{})
+	if err != nil {
+		logrus.Errorf("unable to fetch CRTB objects")
+	}
+
+	for _, oldCrtb := range crtbList.Items {
+		if activeDirectoryPrefix+guid == oldCrtb.UserPrincipalName {
+			if dryRun {
+				logrus.Infof("Dry Run:  Skipping update of %s", oldCrtb.Name)
+			} else {
+				newCrtb := &v3.ClusterRoleTemplateBinding{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:         "",
+						Namespace:    oldCrtb.ObjectMeta.Namespace,
+						GenerateName: "crtb-",
+					},
+					ClusterName:       oldCrtb.ClusterName,
+					UserName:          oldCrtb.UserName,
+					RoleTemplateName:  oldCrtb.RoleTemplateName,
+					UserPrincipalName: newPrincipalID,
+				}
+				_, err := crtbInterface.Create(newCrtb)
+				if err != nil {
+					return fmt.Errorf("unable to create new CRTB: %w", err)
+				}
+				err = sc.Management.ClusterRoleTemplateBindings("").DeleteNamespaced(oldCrtb.Namespace, oldCrtb.Name, &metav1.DeleteOptions{})
+				if err != nil {
+					return fmt.Errorf("unable to delete CRTB: %w", err)
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func migratePRTB(guid string, newPrincipalID string, sc *config.ScaledContext, dryRun bool) error {
+	prtbInterface := sc.Management.ProjectRoleTemplateBindings("")
+	prtbList, err := prtbInterface.List(metav1.ListOptions{})
+	if err != nil {
+		logrus.Errorf("unable to fetch PRTB objects")
+	}
+
+	for _, oldPrtb := range prtbList.Items {
+		if activeDirectoryPrefix+guid == oldPrtb.UserPrincipalName {
+			if dryRun {
+				logrus.Infof("Dry Run:  Skipping update of %s", oldPrtb.Name)
+			} else {
+				newPrtb := &v3.ProjectRoleTemplateBinding{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:         "",
+						Namespace:    oldPrtb.ObjectMeta.Namespace,
+						GenerateName: "prtb-",
+					},
+					ProjectName:       oldPrtb.ProjectName,
+					UserName:          oldPrtb.UserName,
+					RoleTemplateName:  oldPrtb.RoleTemplateName,
+					UserPrincipalName: newPrincipalID,
+				}
+				_, err := prtbInterface.Create(newPrtb)
+				if err != nil {
+					return fmt.Errorf("unable to create new PRTB: %w", err)
+				}
+				err = sc.Management.ProjectRoleTemplateBindings("").DeleteNamespaced(oldPrtb.Namespace, oldPrtb.Name, &metav1.DeleteOptions{})
+				if err != nil {
+					return fmt.Errorf("unable to delete PRTB: %w", err)
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func updateMigrationStatus(sc *config.ScaledContext, status string, value string) error {
+	cm, err := sc.Core.ConfigMaps(statusConfigMapNamespace).Get(statusConfigMapName, metav1.GetOptions{})
+	if err != nil {
+		// Create a new ConfigMap if it doesn't exist
+		if !apierrors.IsNotFound(err) {
+			return err
+		}
+		cm = &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      statusConfigMapName,
+				Namespace: statusConfigMapNamespace,
+			},
+		}
+	}
+
+	cm.Data = map[string]string{status: value}
+
+	if _, err := sc.Core.ConfigMaps(statusConfigMapNamespace).Update(cm); err != nil {
+		// If the ConfigMap does not exist, create it
+		if apierrors.IsNotFound(err) {
+			_, err = sc.Core.ConfigMaps(statusConfigMapNamespace).Create(cm)
+			if err != nil {
+				return fmt.Errorf("unable to create migration status configmap: %v", err)
+			}
+		}
+	}
+
+	return err
 }
