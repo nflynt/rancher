@@ -10,7 +10,6 @@ package clean
 
 import (
 	"bytes"
-	"context"
 	"crypto/x509"
 	"fmt"
 	ldapv3 "github.com/go-ldap/ldap/v3"
@@ -21,15 +20,10 @@ import (
 	"github.com/rancher/rancher/pkg/auth/providers/common"
 	"github.com/rancher/rancher/pkg/auth/providers/common/ldap"
 	v3client "github.com/rancher/rancher/pkg/client/generated/management/v3"
-	mgmt "github.com/rancher/rancher/pkg/generated/controllers/management.cattle.io"
 	"github.com/rancher/rancher/pkg/types/config"
-	"github.com/rancher/wrangler/pkg/generated/controllers/core"
-	"github.com/rancher/wrangler/pkg/generated/controllers/rbac"
 	"github.com/rancher/wrangler/pkg/ratelimit"
-	"github.com/rancher/wrangler/pkg/start"
 	"github.com/sirupsen/logrus"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	restclient "k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -190,8 +184,6 @@ func findDistinguishedName(guid string, adConfig *v3.ActiveDirectoryConfig) (str
 
 // ListAdUsers is purely for debugging. If this is still here, fail the PR. :P
 func ListAdUsers(clientConfig *restclient.Config) error {
-	logrus.Infof("[%v] Hello World!", listAdUsersOperation)
-
 	if os.Getenv("DRY_RUN") == "true" {
 		logrus.Infof("[%v] DRY_RUN is true, no objects will be deleted/modified", listAdUsersOperation)
 		dryRun = true
@@ -210,27 +202,6 @@ func ListAdUsers(clientConfig *restclient.Config) error {
 	}
 	restConfig.RateLimiter = ratelimit.None
 
-	k8srbac, err := rbac.NewFactoryFromConfig(restConfig)
-	if err != nil {
-		return err
-	}
-
-	rancherManagement, err := mgmt.NewFactoryFromConfig(restConfig)
-	if err != nil {
-		return err
-	}
-
-	k8score, err := core.NewFactoryFromConfig(restConfig)
-	if err != nil {
-		return err
-	}
-
-	ctx := context.Background()
-	starters := []start.Starter{rancherManagement, k8srbac, k8score}
-	if err := start.All(ctx, 5, starters...); err != nil {
-		return err
-	}
-
 	sc, err := scaledContext(restConfig)
 	if err != nil {
 		return err
@@ -240,10 +211,7 @@ func ListAdUsers(clientConfig *restclient.Config) error {
 		return err
 	}
 
-	users, err := rancherManagement.Management().V3().User().List(v1.ListOptions{})
-	if err != nil {
-		return err
-	}
+	users, err := sc.Management.Users("").List(metav1.ListOptions{})
 
 	for _, user := range users.Items {
 		logrus.Infof("[%v] Found user with name: %v", listAdUsersOperation, user.Name)
