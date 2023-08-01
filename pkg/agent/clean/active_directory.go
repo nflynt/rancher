@@ -135,7 +135,6 @@ func adConfiguration(sc *config.ScaledContext) (*v3.ActiveDirectoryConfig, error
 
 	logrus.Infof("[%v] Should in theory have ActiveDirectory config data? Let's check!", listAdUsersOperation)
 	logrus.Infof("[%v] AD Service Account User: %v", listAdUsersOperation, storedADConfig.ServiceAccountUsername)
-	logrus.Infof("[%v] AD Service Account Pass: %v", listAdUsersOperation, storedADConfig.ServiceAccountPassword)
 
 	if storedADConfig.ServiceAccountPassword != "" {
 		value, err := common.ReadFromSecret(secrets, storedADConfig.ServiceAccountPassword,
@@ -145,8 +144,6 @@ func adConfiguration(sc *config.ScaledContext) (*v3.ActiveDirectoryConfig, error
 		}
 		storedADConfig.ServiceAccountPassword = value
 	}
-
-	logrus.Infof("[%v] AD Service Account Pass from Secret: %v", listAdUsersOperation, storedADConfig.ServiceAccountPassword)
 
 	return storedADConfig, nil
 }
@@ -293,10 +290,10 @@ func ListAdUsers(clientConfig *restclient.Config) error {
 	}
 	defer lConn.Close()
 
-	err = updateMigrationStatus(sc, "ad-guid-migration-status", "Running")
-	if err != nil {
-		return fmt.Errorf("unable to update migration status configmap: %v", err)
-	}
+	//err = updateMigrationStatus(sc, "ad-guid-migration-status", "Running")
+	//if err != nil {
+	//	return fmt.Errorf("unable to update migration status configmap: %v", err)
+	//}
 
 	users, err := sc.Management.Users("").List(metav1.ListOptions{})
 	if err != nil {
@@ -382,10 +379,11 @@ func ListAdUsers(clientConfig *restclient.Config) error {
 		}
 	}
 
-	err = updateMigrationStatus(sc, "ad-guid-migration-status", "Finished")
-	if err != nil {
-		return fmt.Errorf("unable to update migration status configmap: %v", err)
-	}
+	//err = updateMigrationStatus(sc, "ad-guid-migration-status", "Finished")
+	//if err != nil {
+	//	return fmt.Errorf("unable to update migration status configmap: %v", err)
+	//}
+
 	return nil
 }
 
