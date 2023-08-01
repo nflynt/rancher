@@ -16,11 +16,11 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"os"
 	"strings"
+	"time"
 
 	ldapv3 "github.com/go-ldap/ldap/v3"
 	"github.com/mitchellh/mapstructure"
 	"github.com/pkg/errors"
-	"github.com/rancher/norman/httperror"
 	"github.com/rancher/norman/store/proxy"
 	v3 "github.com/rancher/rancher/pkg/apis/management.cattle.io/v3"
 	"github.com/rancher/rancher/pkg/auth/providers/common"
@@ -43,6 +43,38 @@ const (
 	statusConfigMapName      = "ad-guid-migration"
 	statusConfigMapNamespace = "cattle-system"
 )
+
+type migrateUserWorkUnit struct {
+	distinguishedName string
+	guid              string
+	originalUser      *v3.User
+	duplicateUsers    []*v3.User
+}
+
+type missingUserWorkUnit struct {
+	guid           string
+	originalUser   *v3.User
+	duplicateUsers []*v3.User
+}
+
+type skippedUserWorkUnit struct {
+	guid         string
+	originalUser *v3.User
+}
+
+type LdapErrorNotFound struct{}
+
+// Error provides a string representation of an LdapErrorNotFound
+func (e LdapErrorNotFound) Error() string {
+	return "ldap query returned no results"
+}
+
+type LdapConnectionPermanentlyFailed struct{}
+
+// Error provides a string representation of an LdapConnectionPermanentlyFailed
+func (e LdapConnectionPermanentlyFailed) Error() string {
+	return "ldap search failed to connect after exhausting maximum retry attempts"
+}
 
 func scaledContext(restConfig *restclient.Config) (*config.ScaledContext, error) {
 	sc, err := config.NewScaledContext(*restConfig, nil)
@@ -128,13 +160,29 @@ func newCAPool(cert string) (*x509.CertPool, error) {
 	return pool, nil
 }
 
-func ldapConnection(config *v3.ActiveDirectoryConfig, caPool *x509.CertPool) (*ldapv3.Conn, error) {
+func ldapConnection(config *v3.ActiveDirectoryConfig) (*ldapv3.Conn, error) {
+	caPool, err := newCAPool(config.Certificate)
+	if err != nil {
+		return nil, fmt.Errorf("unable to create caPool: %v", err)
+	}
+
 	servers := config.Servers
 	TLS := config.TLS
 	port := config.Port
 	connectionTimeout := config.ConnectionTimeout
 	startTLS := config.StartTLS
-	return ldap.NewLDAPConn(servers, TLS, startTLS, port, connectionTimeout, caPool)
+
+	ldapConn, err := ldap.NewLDAPConn(servers, TLS, startTLS, port, connectionTimeout, caPool)
+	if err != nil {
+		return nil, err
+	}
+
+	serviceAccountUsername := ldap.GetUserExternalID(config.ServiceAccountUsername, config.DefaultLoginDomain)
+	err = ldapConn.Bind(serviceAccountUsername, config.ServiceAccountPassword)
+	if err != nil {
+		return nil, err
+	}
+	return ldapConn, nil
 }
 
 // EscapeUUID will take a UUID string in string form and will add backslashes to every 2nd character.
@@ -154,24 +202,7 @@ func EscapeUUID(s string) string {
 	return buffer.String()
 }
 
-func findDistinguishedName(guid string, adConfig *v3.ActiveDirectoryConfig) (string, error) {
-	caPool, err := newCAPool(adConfig.Certificate)
-	if err != nil {
-		return "", fmt.Errorf("unable to create caPool: %v", err)
-	}
-
-	lConn, err := ldapConnection(adConfig, caPool)
-	if err != nil {
-		return "", err
-	}
-	defer lConn.Close()
-
-	serviceAccountUsername := ldap.GetUserExternalID(adConfig.ServiceAccountUsername, adConfig.DefaultLoginDomain)
-	err = lConn.Bind(serviceAccountUsername, adConfig.ServiceAccountPassword)
-	if err != nil {
-		return "", err
-	}
-
+func findDistinguishedName(guid string, lConn *ldapv3.Conn, adConfig *v3.ActiveDirectoryConfig) (string, error) {
 	query := fmt.Sprintf("(%v=%v)", "objectGUID", EscapeUUID(guid))
 	search := ldapv3.NewSearchRequest(adConfig.UserSearchBase, ldapv3.ScopeWholeSubtree, ldapv3.NeverDerefAliases,
 		0, 0, false,
@@ -183,14 +214,64 @@ func findDistinguishedName(guid string, adConfig *v3.ActiveDirectoryConfig) (str
 	}
 
 	if len(result.Entries) < 1 {
-		return "", httperror.NewAPIError(httperror.NotFound, fmt.Sprintf("%v not found", query))
+		return "", LdapErrorNotFound{}
 	} else if len(result.Entries) > 1 {
-		return "", fmt.Errorf("ldap user search found more than one result")
+		return "", LdapErrorNotFound{}
 	}
 
 	entry := result.Entries[0]
 
 	return entry.DN, nil
+}
+
+func findDistinguishedNameWithRetries(guid string, lConn *ldapv3.Conn, adConfig *v3.ActiveDirectoryConfig) (string, error) {
+	const maxRetries = 5
+	const retryDelay = time.Duration(10 * time.Second)
+
+	for retry := 0; retry < maxRetries; retry++ {
+		distinguishedName, err := findDistinguishedName(guid, lConn, adConfig)
+		if err == nil || errors.Is(err, LdapErrorNotFound{}) {
+			return distinguishedName, err
+		}
+		logrus.Warnf("[%v] LDAP connection failed: '%v', retrying in %v...", listAdUsersOperation, err, retryDelay.Seconds())
+		time.Sleep(retryDelay)
+		// We don't know why the search failed, it might indicate that the connection has gone stale. Let's
+		// try to re-establish it to be safe
+		lConn.Close()
+		lConn, err = ldapConnection(adConfig)
+		// If that also fails, we're definitely having a rough time of things.
+		if err != nil {
+			return "", LdapConnectionPermanentlyFailed{}
+		}
+	}
+	return "", LdapConnectionPermanentlyFailed{}
+}
+
+// prepareClientContexts sets up a scaled context with the ability to read users and AD configuration data
+func prepareClientContexts(clientConfig *restclient.Config) (*config.ScaledContext, *v3.ActiveDirectoryConfig, error) {
+	var restConfig *restclient.Config
+	var err error
+	if clientConfig != nil {
+		restConfig = clientConfig
+	} else {
+		restConfig, err = clientcmd.BuildConfigFromFlags("", os.Getenv("KUBECONFIG"))
+		if err != nil {
+			logrus.Errorf("[%v] error in building the cluster config %v", listAdUsersOperation, err)
+			return nil, nil, err
+		}
+	}
+	restConfig.RateLimiter = ratelimit.None
+
+	sc, err := scaledContext(restConfig)
+	if err != nil {
+		return nil, nil, err
+	}
+	adConfig, err := adConfiguration(sc)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return sc, adConfig, nil
 }
 
 // ListAdUsers is purely for debugging. If this is still here, fail the PR. :P
@@ -200,27 +281,17 @@ func ListAdUsers(clientConfig *restclient.Config) error {
 		dryRun = true
 	}
 
-	var restConfig *restclient.Config
-	var err error
-	if clientConfig != nil {
-		restConfig = clientConfig
-	} else {
-		restConfig, err = clientcmd.BuildConfigFromFlags("", os.Getenv("KUBECONFIG"))
-		if err != nil {
-			logrus.Errorf("[%v] error in building the cluster config %v", listAdUsersOperation, err)
-			return err
-		}
+	sc, adConfig, err := prepareClientContexts(clientConfig)
+	if err != nil {
+		return err
 	}
-	restConfig.RateLimiter = ratelimit.None
 
-	sc, err := scaledContext(restConfig)
+	// We'll share this lConn for all lookups to hopefully speed things along
+	lConn, err := ldapConnection(adConfig)
 	if err != nil {
 		return err
 	}
-	adConfig, err := adConfiguration(sc)
-	if err != nil {
-		return err
-	}
+	defer lConn.Close()
 
 	err = updateMigrationStatus(sc, "ad-guid-migration-status", "Running")
 	if err != nil {
@@ -232,6 +303,119 @@ func ListAdUsers(clientConfig *restclient.Config) error {
 		return fmt.Errorf("unable to fetch user list: %v", err)
 	}
 
+	usersToMigrate, missingUsers, skippedUsers := identifyMigrationWorkUnits(users, lConn, adConfig)
+
+	for _, user := range skippedUsers {
+		logrus.Errorf("[%v] Unable to migrate user %v due to a connection failure. This user will be skipped!", listAdUsersOperation, user.originalUser.Name)
+	}
+	for _, user := range missingUsers {
+		logrus.Errorf("[%v] User %v with GUID %v does not seem to exist in Active Directory. They may have been deleted. This user will be skipped!", listAdUsersOperation, user.originalUser.Name, user.guid)
+	}
+
+	for _, userToMigrate := range usersToMigrate {
+		dnPrincipal := activeDirectoryPrefix + userToMigrate.distinguishedName
+		// If any of the binding replacements fail, then the resulting rancher state for this user is inconsistent
+		//   and we should NOT attempt to modify the user or delete any of its duplicates. This situation is unusual
+		//   and must be investigated by the local admin.
+		err := migrateTokens(userToMigrate.originalUser.Name, dnPrincipal, sc, dryRun)
+		if err != nil {
+			logrus.Errorf("[%v] unable to migrate tokens for user %v: %v", listAdUsersOperation, userToMigrate.originalUser.Name, err)
+			continue
+		}
+		err = migrateCRTB(userToMigrate.guid, dnPrincipal, sc, dryRun)
+		if err != nil {
+			logrus.Errorf("[%v] unable to migrate CRTBs for user %v: %v", listAdUsersOperation, userToMigrate.originalUser.Name, err)
+			continue
+		}
+		err = migratePRTB(userToMigrate.guid, dnPrincipal, sc, dryRun)
+		if err != nil {
+			logrus.Errorf("[%v] unable to migrate PRTBs for user %v: %v", listAdUsersOperation, userToMigrate.originalUser.Name, err)
+			continue
+		}
+		replaceGuidPrincipalWithDn(userToMigrate.originalUser, userToMigrate.distinguishedName)
+
+		// In dry run mode (and while debugging) we want to print the before/after state of the user principals
+		if dryRun {
+			logrus.Infof("[%v] User '%v' with GUID %v would have new principals:", listAdUsersOperation,
+				userToMigrate.guid, userToMigrate.originalUser.Name)
+			for _, principalId := range userToMigrate.originalUser.PrincipalIDs {
+				logrus.Infof("[%v]     '%v'", listAdUsersOperation, principalId)
+			}
+		} else {
+			logrus.Debugf("[%v] User '%v' with GUID %v will have new principals:", listAdUsersOperation,
+				userToMigrate.guid, userToMigrate.originalUser.Name)
+			for _, principalId := range userToMigrate.originalUser.PrincipalIDs {
+				logrus.Debugf("[%v]     '%v'", listAdUsersOperation, principalId)
+			}
+		}
+
+		// ... okay, moment of truth then. Let's save and see what happens!
+		if dryRun {
+			logrus.Infof("DRY RUN: changes to user %v have NOT been saved.", userToMigrate.originalUser.Name)
+			if len(userToMigrate.duplicateUsers) > 0 {
+				logrus.Infof("[%v] DRY RUN: duplicate users were identified! These users would be deleted:", listAdUsersOperation)
+				for _, duplicateUser := range userToMigrate.duplicateUsers {
+					logrus.Infof("[%v] DRY RUN: would DELETE user %v", listAdUsersOperation, duplicateUser.Name)
+				}
+			}
+		} else {
+			// First delete all the duplicate users
+			for _, duplicateUser := range userToMigrate.duplicateUsers {
+				err = sc.Management.Users("").Delete(duplicateUser.Name, &metav1.DeleteOptions{})
+				if err != nil {
+					logrus.Errorf("[%v] failed to delete dupliate user '%v' with: %v", listAdUsersOperation, userToMigrate.originalUser.Name, err)
+					// If the duplicate deletion has failed for some reason, it is NOT safe to save the modified user, as
+					// this may result in a duplicate AD principal ID. Notify and skip.
+					logrus.Errorf("[%v] cannot safely save modifications to user %v, skipping", listAdUsersOperation, userToMigrate.originalUser.Name)
+					continue
+				} else {
+					logrus.Infof("[%v] deleted duplicate user %v", listAdUsersOperation, duplicateUser.Name)
+				}
+			}
+			// Having updated all permissions bindings and resolved all potential principal ID conflicts, it is
+			// finally safe to save the modified original user
+			_, err = sc.Management.Users("").Update(userToMigrate.originalUser)
+			if err != nil {
+				logrus.Errorf("[%v] failed to save modified user '%v' with: %v", listAdUsersOperation, userToMigrate.originalUser.Name, err)
+			}
+			logrus.Infof("[%v] user %v was successfully migrated", listAdUsersOperation, userToMigrate.originalUser.Name)
+		}
+	}
+
+	err = updateMigrationStatus(sc, "ad-guid-migration-status", "Finished")
+	if err != nil {
+		return fmt.Errorf("unable to update migration status configmap: %v", err)
+	}
+	return nil
+}
+
+// identifyMigrationWorkUnits locates ActiveDirectory users with GUID and DN based principal IDs and sorts them
+// into work units based on whether those users can be located in the upstream Active Directory provider. Specifically:
+//
+//	usersToMigrate contains GUID-based original users and any duplicates (GUID or DN based) that we wish to merge
+//	missingUsers contains GUID-based users who could not be found in Active Directory
+//	skippedUsers contains GUID-based users that could not be processed, usually due to an LDAP connection failure
+func identifyMigrationWorkUnits(users *v3.UserList, lConn *ldapv3.Conn, adConfig *v3.ActiveDirectoryConfig) (
+	[]migrateUserWorkUnit, []missingUserWorkUnit, []skippedUserWorkUnit) {
+	// Note: we *could* make the ldap connection on the spot here, but we're accepting it as a parameter specifically
+	// so that this function is easier to test. This setup allows us to mock the ldap connection and thus more easily
+	// test unusual Active Directory responses to our searches.
+
+	var usersToMigrate []migrateUserWorkUnit
+	var missingUsers []missingUserWorkUnit
+	var skippedUsers []skippedUserWorkUnit
+
+	// These assist with quickly identifying duplicates, so we don't have to scan the whole structure each time.
+	// We key on guid/dn, and the value is the index of that work unit in the associated table
+	knownGuidWorkUnits := map[string]int{}
+	knownGuidMissingUnits := map[string]int{}
+	knownDnWorkUnits := map[string]int{}
+
+	// Now we'll make two passes over the list of all users. First we need to identify any GUID based users, and
+	// sort them into "found" and "not found" lists. At this stage we might have GUID-based duplicates, and we'll
+	// detect and sort those accordingly
+	ldapPermanentlyFailed := false
+	logrus.Debugf("[%v] Locating any GUID-based Active Directory users...", listAdUsersOperation)
 	for _, user := range users.Items {
 		if !isAdUser(&user) {
 			logrus.Debugf("[%v] User '%v' has no AD principals, skipping", listAdUsersOperation, user.Name)
@@ -243,67 +427,95 @@ func ListAdUsers(clientConfig *restclient.Config) error {
 			logrus.Debugf("[%v] '%v' Does not appear to be a GUID-based principal ID, taking no action.", listAdUsersOperation, principalId)
 			continue
 		}
-		logrus.Infof("[%v] Found AD user %v with GUID principalId %v, let's try a DN lookup", listAdUsersOperation, user.Name, principalId)
 		guid, _, err := getExternalIdAndScope(principalId)
 		if err != nil {
 			// This really shouldn't be possible to hit, since isGuid will fail to parse anything that would
 			// cause getExternalIdAndScope to choke on the input, but for maximum safety we'll handle it anyway.
-			logrus.Errorf("[%v] Failed to extract ID from principal '%v', cannot process this user! (%v)", listAdUsersOperation, err, user.Name)
+			logrus.Errorf("[%v] Failed to extract GUID from principal '%v', cannot process this user! (%v)", listAdUsersOperation, err, user.Name)
 			continue
 		}
-		dn, err := findDistinguishedName(guid, adConfig)
-		if err != nil {
-			// TODO: Need to distinguish between missing user and failed LDAP connection. The error result should
-			//   probably be typed accordingly. If the LDAP connection has failed, all future lookups will also fail,
-			//   so we either need to re-establish the connection or die.
-			// TODO: Missing upstream user case: What action should we take here?
-			var apiError *httperror.APIError
-			if errors.As(err, &apiError) && httperror.IsNotFound(apiError) {
-				logrus.Infof("AD user does not exist, skipping migration for user: %v", err)
+		// If our LDAP connection has gone sour, we still need to log this user for reporting
+		if ldapPermanentlyFailed {
+			skippedUsers = append(skippedUsers, skippedUserWorkUnit{guid: guid, originalUser: &user})
+		} else {
+			// Check for guid-based duplicates here. If we find one, we don't need to perform an other LDAP lookup.
+			if i, exists := knownGuidWorkUnits[guid]; exists {
+				logrus.Debugf("[%v] User %v is GUID-based (%v) and a duplicate of %v",
+					listAdUsersOperation, user.Name, guid, usersToMigrate[i].originalUser.Name)
+				// Make sure the oldest duplicate user is selected as the original
+				if usersToMigrate[i].originalUser.CreationTimestamp.Time.After(user.CreationTimestamp.Time) {
+					usersToMigrate[i].duplicateUsers = append(usersToMigrate[i].duplicateUsers, usersToMigrate[i].originalUser)
+					usersToMigrate[i].originalUser = &user
+				} else {
+					usersToMigrate[i].duplicateUsers = append(usersToMigrate[i].duplicateUsers, &user)
+				}
 				continue
 			}
-			logrus.Errorf("[%v] failed to look up DN with: %v", listAdUsersOperation, err)
-		} else {
-			logrus.Infof("[%v] Local user with GUID '%v' maps to upstream user with DN: '%v'. Will proceed to migrate.", listAdUsersOperation, guid, dn)
-			// Happy path: we have a local GUID user and an upstream DN to map them to. Make that change,
-			// and then kick off all the relevant cleanup logic for this user's owned bindings.
-			// TODO: said happy path
-			dnPrincipal := activeDirectoryPrefix + dn
-			err := migrateTokens(user.Name, dnPrincipal, sc, dryRun)
-			if err != nil {
-				return fmt.Errorf("unable to migrate token: %v", err)
+			if i, exists := knownGuidMissingUnits[guid]; exists {
+				logrus.Debugf("[%v] User %v is GUID-based (%v) and a duplicate of %v which is known to be missing",
+					listAdUsersOperation, user.Name, guid, missingUsers[i].originalUser.Name)
+				// We're less picky about the age of the oldest user here, because we aren't going to deduplicate these
+				missingUsers[i].duplicateUsers = append(missingUsers[i].duplicateUsers, &user)
+				continue
 			}
-			err = migrateCRTB(guid, dnPrincipal, sc, dryRun)
-			if err != nil {
-				return fmt.Errorf("unable to migrate CRTB: %v", err)
-			}
-			err = migratePRTB(guid, dnPrincipal, sc, dryRun)
-			if err != nil {
-				return fmt.Errorf("unable to migrate PRTB: %v", err)
-			}
-			replaceGuidPrincipalWithDn(&user, dn)
-			// yeah I don't trust that; debug time!
-			logrus.Infof("[%v] User '%v' has new principals:", listAdUsersOperation, user.Name)
-			for _, principalId := range user.PrincipalIDs {
-				logrus.Infof("[%v]     '%v'", listAdUsersOperation, principalId)
-			}
-			logrus.Infof("[%v] WOULD SAVE HERE", listAdUsersOperation)
-			// ... okay, moment of truth then. Let's save and see what happens!
-			if dryRun {
-				logrus.Infof("Dry Run: skipping user update %v", user.Name)
+			dn, err := findDistinguishedNameWithRetries(guid, lConn, adConfig)
+			if errors.Is(err, LdapConnectionPermanentlyFailed{}) {
+				logrus.Warnf("[%v] LDAP connection has permanently failed! Will proceed to migrate the users we were able to identify up to this point.", listAdUsersOperation)
+				skippedUsers = append(skippedUsers, skippedUserWorkUnit{guid: guid, originalUser: &user})
+				ldapPermanentlyFailed = true
+			} else if errors.Is(err, LdapErrorNotFound{}) {
+				logrus.Debugf("[%v] User %v is GUID-based (%v) and the Active Directory server doesn't know about it. Marking it as missing!", listAdUsersOperation, user.Name, guid)
+				knownGuidMissingUnits[guid] = len(missingUsers)
+				missingUsers = append(missingUsers, missingUserWorkUnit{guid: guid, originalUser: &user})
 			} else {
-				_, err = sc.Management.Users("").Update(&user)
-				if err != nil {
-					logrus.Errorf("[%v] Failed to save modified user '%v' with: %v", listAdUsersOperation, user.Name, err)
-				}
+				logrus.Debugf("[%v] User %v is GUID-based (%v) and the Active Directory server knows it by the Distinguished Name '%v'", listAdUsersOperation, user.Name, guid, dn)
+				knownGuidWorkUnits[guid] = len(usersToMigrate)
+				knownDnWorkUnits[dn] = len(usersToMigrate)
+				var emptyDuplicateList []*v3.User
+				usersToMigrate = append(usersToMigrate, migrateUserWorkUnit{guid: guid, distinguishedName: dn, originalUser: &user, duplicateUsers: emptyDuplicateList})
 			}
 		}
 	}
-	err = updateMigrationStatus(sc, "ad-guid-migration-status", "Finished")
-	if err != nil {
-		return fmt.Errorf("unable to update migration status configmap: %v", err)
+
+	if len(usersToMigrate) == 0 {
+		logrus.Debugf("[%v] Found 0 users in need of migration, exiting without checking for DN-based duplicates.", listAdUsersOperation)
+		return usersToMigrate, missingUsers, skippedUsers
 	}
-	return nil
+
+	// Now for the second pass, we need to identify DN-based users, and see if they are duplicates of any of the GUID
+	// users that we found in the first pass. We'll prefer the oldest user as the originalUser object, this will be
+	// the one we keep when we resolve duplicates later.
+	logrus.Debugf("[%v] Locating any DN-based Active Directory users...", listAdUsersOperation)
+	for _, user := range users.Items {
+		if !isAdUser(&user) {
+			logrus.Debugf("[%v] User '%v' has no AD principals, skipping", listAdUsersOperation, user.Name)
+			continue
+		}
+		principalId := adPrincipalId(&user)
+		logrus.Debugf("[%v] Processing AD User '%v' with principal ID: '%v'", listAdUsersOperation, user.Name, principalId)
+		if isGuid(principalId) {
+			logrus.Debugf("[%v] '%v' Does not appear to be a DN-based principal ID, taking no action.", listAdUsersOperation, principalId)
+			continue
+		}
+		dn, _, err := getExternalIdAndScope(principalId)
+		if err != nil {
+			logrus.Errorf("[%v] Failed to extract DN from principal '%v', cannot process this user! (%v)", listAdUsersOperation, err, user.Name)
+			continue
+		}
+		if i, exists := knownDnWorkUnits[dn]; exists {
+			logrus.Debugf("[%v] User %v is DN-based (%v), and a duplicate of %v",
+				listAdUsersOperation, user.Name, dn, usersToMigrate[i].originalUser.Name)
+			// Make sure the oldest duplicate user is selected as the original
+			if usersToMigrate[i].originalUser.CreationTimestamp.Time.After(user.CreationTimestamp.Time) {
+				usersToMigrate[i].duplicateUsers = append(usersToMigrate[i].duplicateUsers, usersToMigrate[i].originalUser)
+				usersToMigrate[i].originalUser = &user
+			} else {
+				usersToMigrate[i].duplicateUsers = append(usersToMigrate[i].duplicateUsers, &user)
+			}
+		}
+	}
+
+	return usersToMigrate, missingUsers, skippedUsers
 }
 
 func replaceGuidPrincipalWithDn(user *v3.User, dn string) {

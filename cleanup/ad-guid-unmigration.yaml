@@ -67,6 +67,14 @@ rules:
     verbs:
       - get
   - apiGroups:
+      - ''
+    resources:
+      - configmaps
+    verbs:
+      - get
+      - create
+      - update
+  - apiGroups:
       - management.cattle.io
     resources:
       - authconfigs
