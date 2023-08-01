@@ -12,11 +12,12 @@ import (
 	"bytes"
 	"crypto/x509"
 	"fmt"
-	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"os"
 	"strings"
 	"time"
+
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 
 	ldapv3 "github.com/go-ldap/ldap/v3"
 	"github.com/mitchellh/mapstructure"
@@ -290,10 +291,10 @@ func ListAdUsers(clientConfig *restclient.Config) error {
 	}
 	defer lConn.Close()
 
-	//err = updateMigrationStatus(sc, "ad-guid-migration-status", "Running")
-	//if err != nil {
-	//	return fmt.Errorf("unable to update migration status configmap: %v", err)
-	//}
+	err = updateMigrationStatus(sc, "ad-guid-migration-status", "Running")
+	if err != nil {
+		return fmt.Errorf("unable to update migration status configmap: %v", err)
+	}
 
 	users, err := sc.Management.Users("").List(metav1.ListOptions{})
 	if err != nil {
@@ -379,10 +380,10 @@ func ListAdUsers(clientConfig *restclient.Config) error {
 		}
 	}
 
-	//err = updateMigrationStatus(sc, "ad-guid-migration-status", "Finished")
-	//if err != nil {
-	//	return fmt.Errorf("unable to update migration status configmap: %v", err)
-	//}
+	err = updateMigrationStatus(sc, "ad-guid-migration-status", "Finished")
+	if err != nil {
+		return fmt.Errorf("unable to update migration status configmap: %v", err)
+	}
 
 	return nil
 }
@@ -434,7 +435,7 @@ func identifyMigrationWorkUnits(users *v3.UserList, lConn *ldapv3.Conn, adConfig
 		}
 		// If our LDAP connection has gone sour, we still need to log this user for reporting
 		if ldapPermanentlyFailed {
-			skippedUsers = append(skippedUsers, skippedUserWorkUnit{guid: guid, originalUser: &user})
+			skippedUsers = append(skippedUsers, skippedUserWorkUnit{guid: guid, originalUser: user.DeepCopy()})
 		} else {
 			// Check for guid-based duplicates here. If we find one, we don't need to perform an other LDAP lookup.
 			if i, exists := knownGuidWorkUnits[guid]; exists {
@@ -443,9 +444,9 @@ func identifyMigrationWorkUnits(users *v3.UserList, lConn *ldapv3.Conn, adConfig
 				// Make sure the oldest duplicate user is selected as the original
 				if usersToMigrate[i].originalUser.CreationTimestamp.Time.After(user.CreationTimestamp.Time) {
 					usersToMigrate[i].duplicateUsers = append(usersToMigrate[i].duplicateUsers, usersToMigrate[i].originalUser)
-					usersToMigrate[i].originalUser = &user
+					usersToMigrate[i].originalUser = user.DeepCopy()
 				} else {
-					usersToMigrate[i].duplicateUsers = append(usersToMigrate[i].duplicateUsers, &user)
+					usersToMigrate[i].duplicateUsers = append(usersToMigrate[i].duplicateUsers, user.DeepCopy())
 				}
 				continue
 			}
@@ -453,24 +454,24 @@ func identifyMigrationWorkUnits(users *v3.UserList, lConn *ldapv3.Conn, adConfig
 				logrus.Debugf("[%v] User %v is GUID-based (%v) and a duplicate of %v which is known to be missing",
 					listAdUsersOperation, user.Name, guid, missingUsers[i].originalUser.Name)
 				// We're less picky about the age of the oldest user here, because we aren't going to deduplicate these
-				missingUsers[i].duplicateUsers = append(missingUsers[i].duplicateUsers, &user)
+				missingUsers[i].duplicateUsers = append(missingUsers[i].duplicateUsers, user.DeepCopy())
 				continue
 			}
 			dn, err := findDistinguishedNameWithRetries(guid, lConn, adConfig)
 			if errors.Is(err, LdapConnectionPermanentlyFailed{}) {
 				logrus.Warnf("[%v] LDAP connection has permanently failed! Will proceed to migrate the users we were able to identify up to this point.", listAdUsersOperation)
-				skippedUsers = append(skippedUsers, skippedUserWorkUnit{guid: guid, originalUser: &user})
+				skippedUsers = append(skippedUsers, skippedUserWorkUnit{guid: guid, originalUser: user.DeepCopy()})
 				ldapPermanentlyFailed = true
 			} else if errors.Is(err, LdapErrorNotFound{}) {
 				logrus.Debugf("[%v] User %v is GUID-based (%v) and the Active Directory server doesn't know about it. Marking it as missing!", listAdUsersOperation, user.Name, guid)
 				knownGuidMissingUnits[guid] = len(missingUsers)
-				missingUsers = append(missingUsers, missingUserWorkUnit{guid: guid, originalUser: &user})
+				missingUsers = append(missingUsers, missingUserWorkUnit{guid: guid, originalUser: user.DeepCopy()})
 			} else {
 				logrus.Debugf("[%v] User %v is GUID-based (%v) and the Active Directory server knows it by the Distinguished Name '%v'", listAdUsersOperation, user.Name, guid, dn)
 				knownGuidWorkUnits[guid] = len(usersToMigrate)
 				knownDnWorkUnits[dn] = len(usersToMigrate)
 				var emptyDuplicateList []*v3.User
-				usersToMigrate = append(usersToMigrate, migrateUserWorkUnit{guid: guid, distinguishedName: dn, originalUser: &user, duplicateUsers: emptyDuplicateList})
+				usersToMigrate = append(usersToMigrate, migrateUserWorkUnit{guid: guid, distinguishedName: dn, originalUser: user.DeepCopy(), duplicateUsers: emptyDuplicateList})
 			}
 		}
 	}
@@ -696,5 +697,5 @@ func updateMigrationStatus(sc *config.ScaledContext, status string, value string
 		}
 	}
 
-	return err
+	return nil
 }
