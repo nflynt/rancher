@@ -80,6 +80,7 @@ rules:
       - authconfigs
       - clusterroletemplatebindings
       - projectroletemplatebindings
+      - tokens
       - users
     verbs:
       - '*'
