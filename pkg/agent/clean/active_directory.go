@@ -38,11 +38,17 @@ import (
 )
 
 const (
-	listAdUsersOperation     = "list-ad-users"
-	migrateAdUserOperation   = "migrate-ad-user"
-	activeDirectoryPrefix    = "activedirectory_user://"
-	statusConfigMapName      = "ad-guid-migration"
-	statusConfigMapNamespace = "cattle-system"
+	listAdUsersOperation      = "list-ad-users"
+	migrateAdUserOperation    = "migrate-ad-user"
+	activeDirectoryPrefix     = "activedirectory_user://"
+	statusConfigMapName       = "ad-guid-migration"
+	statusConfigMapNamespace  = "cattle-system"
+	statusMigrationField      = "ad-guid-migration-status"
+	statusMigrationFinished   = "Finished"
+	statusMigrationRunning    = "Running"
+	adGUIDMigrationLabel      = "ad-guid-migration"
+	adGUIDMigrationAnnotation = "ad-guid-migration-data"
+	migratedLabelValue        = "migrated"
 )
 
 type migrateUserWorkUnit struct {
@@ -291,7 +297,7 @@ func ListAdUsers(clientConfig *restclient.Config) error {
 	}
 	defer lConn.Close()
 
-	err = updateMigrationStatus(sc, "ad-guid-migration-status", "Running")
+	err = updateMigrationStatus(sc, statusMigrationField, statusMigrationRunning)
 	if err != nil {
 		return fmt.Errorf("unable to update migration status configmap: %v", err)
 	}
@@ -315,7 +321,7 @@ func ListAdUsers(clientConfig *restclient.Config) error {
 		// If any of the binding replacements fail, then the resulting rancher state for this user is inconsistent
 		//   and we should NOT attempt to modify the user or delete any of its duplicates. This situation is unusual
 		//   and must be investigated by the local admin.
-		err := migrateTokens(userToMigrate.originalUser.Name, dnPrincipal, sc, dryRun)
+		err := migrateTokens(userToMigrate, dnPrincipal, sc, dryRun)
 		if err != nil {
 			logrus.Errorf("[%v] unable to migrate tokens for user %v: %v", listAdUsersOperation, userToMigrate.originalUser.Name, err)
 			continue
@@ -372,6 +378,9 @@ func ListAdUsers(clientConfig *restclient.Config) error {
 			}
 			// Having updated all permissions bindings and resolved all potential principal ID conflicts, it is
 			// finally safe to save the modified original user
+
+			userToMigrate.originalUser.Annotations[adGUIDMigrationLabel] = userToMigrate.guid
+			userToMigrate.originalUser.Labels[adGUIDMigrationAnnotation] = migratedLabelValue
 			_, err = sc.Management.Users("").Update(userToMigrate.originalUser)
 			if err != nil {
 				logrus.Errorf("[%v] failed to save modified user '%v' with: %v", listAdUsersOperation, userToMigrate.originalUser.Name, err)
@@ -380,7 +389,7 @@ func ListAdUsers(clientConfig *restclient.Config) error {
 		}
 	}
 
-	err = updateMigrationStatus(sc, "ad-guid-migration-status", "Finished")
+	err = updateMigrationStatus(sc, statusMigrationField, statusMigrationFinished)
 	if err != nil {
 		return fmt.Errorf("unable to update migration status configmap: %v", err)
 	}
@@ -568,9 +577,9 @@ func getExternalIdAndScope(principalID string) (string, string, error) {
 	return externalID, scope, nil
 }
 
-func migrateTokens(userName string, newPrincipalID string, sc *config.ScaledContext, dryRun bool) error {
+func migrateTokens(user migrateUserWorkUnit, newPrincipalID string, sc *config.ScaledContext, dryRun bool) error {
 	tokenLabelSelector := labels.SelectorFromSet(labels.Set{
-		"authn.management.cattle.io/token-userId": userName,
+		"authn.management.cattle.io/token-userId": user.originalUser.Username,
 	})
 	tokenListOptions := metav1.ListOptions{
 		LabelSelector: tokenLabelSelector.String(),
@@ -584,6 +593,9 @@ func migrateTokens(userName string, newPrincipalID string, sc *config.ScaledCont
 
 	for _, userToken := range tokens.Items {
 		userToken.UserPrincipal.Name = newPrincipalID
+		userToken.Annotations[adGUIDMigrationAnnotation] = user.guid
+		userToken.Labels[adGUIDMigrationLabel] = migratedLabelValue
+
 		if dryRun {
 			logrus.Infof("Dry Run:  Skipping update of %s", userToken.Name)
 		} else {
@@ -608,11 +620,17 @@ func migrateCRTB(guid string, newPrincipalID string, sc *config.ScaledContext, d
 			if dryRun {
 				logrus.Infof("Dry Run:  Skipping update of %s", oldCrtb.Name)
 			} else {
+				newAnnotations := oldCrtb.Annotations
+				newAnnotations[adGUIDMigrationAnnotation] = guid
+				newLabels := oldCrtb.Labels
+				newLabels[adGUIDMigrationLabel] = migratedLabelValue
 				newCrtb := &v3.ClusterRoleTemplateBinding{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:         "",
 						Namespace:    oldCrtb.ObjectMeta.Namespace,
 						GenerateName: "crtb-",
+						Annotations:  newAnnotations,
+						Labels:       newLabels,
 					},
 					ClusterName:       oldCrtb.ClusterName,
 					UserName:          oldCrtb.UserName,
@@ -645,11 +663,17 @@ func migratePRTB(guid string, newPrincipalID string, sc *config.ScaledContext, d
 			if dryRun {
 				logrus.Infof("Dry Run:  Skipping update of %s", oldPrtb.Name)
 			} else {
+				newAnnotations := oldPrtb.Annotations
+				newAnnotations[adGUIDMigrationAnnotation] = guid
+				newLabels := oldPrtb.Labels
+				newLabels[adGUIDMigrationLabel] = migratedLabelValue
 				newPrtb := &v3.ProjectRoleTemplateBinding{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:         "",
 						Namespace:    oldPrtb.ObjectMeta.Namespace,
 						GenerateName: "prtb-",
+						Annotations:  newAnnotations,
+						Labels:       newLabels,
 					},
 					ProjectName:       oldPrtb.ProjectName,
 					UserName:          oldPrtb.UserName,
