@@ -754,8 +754,14 @@ func migrateCRTBs(workunit *migrateUserWorkUnit, sc *config.ScaledContext, dryRu
 			logrus.Infof("Dry Run:  Would migrate CRTB '%v' from GUID principal '%v' to DN principal '%v'", oldCrtb.Name, oldCrtb.UserPrincipalName, dnPrincipalID)
 		} else {
 			newAnnotations := oldCrtb.Annotations
+			if newAnnotations == nil {
+				newAnnotations = make(map[string]string)
+			}
 			newAnnotations[adGUIDMigrationAnnotation] = oldCrtb.UserPrincipalName
 			newLabels := oldCrtb.Labels
+			if newLabels == nil {
+				newLabels = make(map[string]string)
+			}
 			newLabels[adGUIDMigrationLabel] = migratedLabelValue
 			newCrtb := &v3.ClusterRoleTemplateBinding{
 				ObjectMeta: metav1.ObjectMeta{
@@ -788,8 +794,14 @@ func migrateCRTBs(workunit *migrateUserWorkUnit, sc *config.ScaledContext, dryRu
 			logrus.Infof("Dry Run:  Would migrate CRTB '%v' from duplicate local user '%v' to original user '%v'", oldCrtb.Name, oldCrtb.UserPrincipalName, localPrincipalID)
 		} else {
 			newAnnotations := oldCrtb.Annotations
+			if newAnnotations == nil {
+				newAnnotations = make(map[string]string)
+			}
 			newAnnotations[adGUIDMigrationAnnotation] = oldCrtb.UserPrincipalName
 			newLabels := oldCrtb.Labels
+			if newLabels == nil {
+				newLabels = make(map[string]string)
+			}
 			newLabels[adGUIDMigrationLabel] = migratedLabelValue
 			newCrtb := &v3.ClusterRoleTemplateBinding{
 				ObjectMeta: metav1.ObjectMeta{
@@ -826,8 +838,14 @@ func migratePRTBs(workunit *migrateUserWorkUnit, sc *config.ScaledContext, dryRu
 			logrus.Infof("Dry Run:  Would migrate PRTB '%v' from GUID principal '%v' to DN principal '%v'", oldPrtb.Name, oldPrtb.UserPrincipalName, dnPrincipalID)
 		} else {
 			newAnnotations := oldPrtb.Annotations
+			if newAnnotations == nil {
+				newAnnotations = make(map[string]string)
+			}
 			newAnnotations[adGUIDMigrationAnnotation] = oldPrtb.UserPrincipalName
 			newLabels := oldPrtb.Labels
+			if newLabels == nil {
+				newLabels = make(map[string]string)
+			}
 			newLabels[adGUIDMigrationLabel] = migratedLabelValue
 			newPrtb := &v3.ProjectRoleTemplateBinding{
 				ObjectMeta: metav1.ObjectMeta{
@@ -860,8 +878,14 @@ func migratePRTBs(workunit *migrateUserWorkUnit, sc *config.ScaledContext, dryRu
 			logrus.Infof("Dry Run:  Would migrate PRTB '%v' from duplicate local user '%v' to original user '%v'", oldPrtb.Name, oldPrtb.UserPrincipalName, localPrincipalID)
 		} else {
 			newAnnotations := oldPrtb.Annotations
+			if newAnnotations == nil {
+				newAnnotations = make(map[string]string)
+			}
 			newAnnotations[adGUIDMigrationAnnotation] = oldPrtb.UserPrincipalName
 			newLabels := oldPrtb.Labels
+			if newLabels == nil {
+				newLabels = make(map[string]string)
+			}
 			newLabels[adGUIDMigrationLabel] = migratedLabelValue
 			newPrtb := &v3.ProjectRoleTemplateBinding{
 				ObjectMeta: metav1.ObjectMeta{
