@@ -61,43 +61,8 @@ metadata:
   namespace: default
 rules:
   - apiGroups:
-      - ''
+      - '*'
     resources:
-      - secrets
-    verbs:
-      - get
-  - apiGroups:
-      - ''
-    resources:
-      - configmaps
-    verbs:
-      - get
-      - create
-      - update
-  - apiGroups:
-      - management.cattle.io
-    resources:
-      - authconfigs
-      - clusterroletemplatebindings
-      - projectroletemplatebindings
-      - tokens
-      - users
+      - '*'
     verbs:
       - '*'
-  - apiGroups:
-      - rbac.authorization.k8s.io
-    resources:
-      - rolebindings
-      - clusterrolebindings
-    verbs:
-      - list
-      - get
-      - delete
-  - apiGroups:
-      - batch
-    resources:
-      - jobs
-    verbs:
-      - list
-      - get
-      - delete
