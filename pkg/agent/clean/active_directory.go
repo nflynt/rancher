@@ -38,11 +38,18 @@ import (
 )
 
 const (
-	listAdUsersOperation     = "list-ad-users"
-	migrateAdUserOperation   = "migrate-ad-user"
-	activeDirectoryPrefix    = "activedirectory_user://"
-	statusConfigMapName      = "ad-guid-migration"
-	statusConfigMapNamespace = "cattle-system"
+	listAdUsersOperation      = "list-ad-users"
+	migrateAdUserOperation    = "migrate-ad-user"
+	activeDirectoryPrefix     = "activedirectory_user://"
+	StatusConfigMapName       = "ad-guid-migration"
+	StatusConfigMapNamespace  = "cattle-system"
+	StatusMigrationField      = "ad-guid-migration-status"
+	StatusMigrationFinished   = "Finished"
+	StatusMigrationRunning    = "Running"
+	StatusLoginDisabled       = "login is disabled while migration is running"
+	adGUIDMigrationLabel      = "ad-guid-migration"
+	adGUIDMigrationAnnotation = "ad-guid-migration-data"
+	migratedLabelValue        = "migrated"
 )
 
 type migrateUserWorkUnit struct {
@@ -75,6 +82,13 @@ type LdapConnectionPermanentlyFailed struct{}
 // Error provides a string representation of an LdapConnectionPermanentlyFailed
 func (e LdapConnectionPermanentlyFailed) Error() string {
 	return "ldap search failed to connect after exhausting maximum retry attempts"
+}
+
+type LoginDisabledError struct{}
+
+// Error provides a string representation of an LdapErrorNotFound
+func (e LoginDisabledError) Error() string {
+	return StatusLoginDisabled
 }
 
 func scaledContext(restConfig *restclient.Config) (*config.ScaledContext, error) {
@@ -291,7 +305,7 @@ func ListAdUsers(clientConfig *restclient.Config) error {
 	}
 	defer lConn.Close()
 
-	err = updateMigrationStatus(sc, "ad-guid-migration-status", "Running")
+	err = updateMigrationStatus(sc, StatusMigrationField, StatusMigrationRunning)
 	if err != nil {
 		return fmt.Errorf("unable to update migration status configmap: %v", err)
 	}
@@ -315,7 +329,7 @@ func ListAdUsers(clientConfig *restclient.Config) error {
 		// If any of the binding replacements fail, then the resulting rancher state for this user is inconsistent
 		//   and we should NOT attempt to modify the user or delete any of its duplicates. This situation is unusual
 		//   and must be investigated by the local admin.
-		err := migrateTokens(userToMigrate.originalUser.Name, dnPrincipal, sc, dryRun)
+		err := migrateTokens(userToMigrate, dnPrincipal, sc, dryRun)
 		if err != nil {
 			logrus.Errorf("[%v] unable to migrate tokens for user %v: %v", listAdUsersOperation, userToMigrate.originalUser.Name, err)
 			continue
@@ -372,6 +386,9 @@ func ListAdUsers(clientConfig *restclient.Config) error {
 			}
 			// Having updated all permissions bindings and resolved all potential principal ID conflicts, it is
 			// finally safe to save the modified original user
+
+			userToMigrate.originalUser.Annotations[adGUIDMigrationAnnotation] = userToMigrate.guid
+			userToMigrate.originalUser.Labels[adGUIDMigrationLabel] = migratedLabelValue
 			_, err = sc.Management.Users("").Update(userToMigrate.originalUser)
 			if err != nil {
 				logrus.Errorf("[%v] failed to save modified user '%v' with: %v", listAdUsersOperation, userToMigrate.originalUser.Name, err)
@@ -380,7 +397,7 @@ func ListAdUsers(clientConfig *restclient.Config) error {
 		}
 	}
 
-	err = updateMigrationStatus(sc, "ad-guid-migration-status", "Finished")
+	err = updateMigrationStatus(sc, StatusMigrationField, StatusMigrationFinished)
 	if err != nil {
 		return fmt.Errorf("unable to update migration status configmap: %v", err)
 	}
@@ -568,9 +585,9 @@ func getExternalIdAndScope(principalID string) (string, string, error) {
 	return externalID, scope, nil
 }
 
-func migrateTokens(userName string, newPrincipalID string, sc *config.ScaledContext, dryRun bool) error {
+func migrateTokens(user migrateUserWorkUnit, newPrincipalID string, sc *config.ScaledContext, dryRun bool) error {
 	tokenLabelSelector := labels.SelectorFromSet(labels.Set{
-		"authn.management.cattle.io/token-userId": userName,
+		"authn.management.cattle.io/token-userId": user.originalUser.Username,
 	})
 	tokenListOptions := metav1.ListOptions{
 		LabelSelector: tokenLabelSelector.String(),
@@ -584,6 +601,9 @@ func migrateTokens(userName string, newPrincipalID string, sc *config.ScaledCont
 
 	for _, userToken := range tokens.Items {
 		userToken.UserPrincipal.Name = newPrincipalID
+		userToken.Annotations[adGUIDMigrationAnnotation] = user.guid
+		userToken.Labels[adGUIDMigrationLabel] = migratedLabelValue
+
 		if dryRun {
 			logrus.Infof("Dry Run:  Skipping update of %s", userToken.Name)
 		} else {
@@ -608,11 +628,17 @@ func migrateCRTB(guid string, newPrincipalID string, sc *config.ScaledContext, d
 			if dryRun {
 				logrus.Infof("Dry Run:  Skipping update of %s", oldCrtb.Name)
 			} else {
+				newAnnotations := oldCrtb.Annotations
+				newAnnotations[adGUIDMigrationAnnotation] = guid
+				newLabels := oldCrtb.Labels
+				newLabels[adGUIDMigrationLabel] = migratedLabelValue
 				newCrtb := &v3.ClusterRoleTemplateBinding{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:         "",
 						Namespace:    oldCrtb.ObjectMeta.Namespace,
 						GenerateName: "crtb-",
+						Annotations:  newAnnotations,
+						Labels:       newLabels,
 					},
 					ClusterName:       oldCrtb.ClusterName,
 					UserName:          oldCrtb.UserName,
@@ -645,11 +671,17 @@ func migratePRTB(guid string, newPrincipalID string, sc *config.ScaledContext, d
 			if dryRun {
 				logrus.Infof("Dry Run:  Skipping update of %s", oldPrtb.Name)
 			} else {
+				newAnnotations := oldPrtb.Annotations
+				newAnnotations[adGUIDMigrationAnnotation] = guid
+				newLabels := oldPrtb.Labels
+				newLabels[adGUIDMigrationLabel] = migratedLabelValue
 				newPrtb := &v3.ProjectRoleTemplateBinding{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:         "",
 						Namespace:    oldPrtb.ObjectMeta.Namespace,
 						GenerateName: "prtb-",
+						Annotations:  newAnnotations,
+						Labels:       newLabels,
 					},
 					ProjectName:       oldPrtb.ProjectName,
 					UserName:          oldPrtb.UserName,
@@ -671,7 +703,7 @@ func migratePRTB(guid string, newPrincipalID string, sc *config.ScaledContext, d
 }
 
 func updateMigrationStatus(sc *config.ScaledContext, status string, value string) error {
-	cm, err := sc.Core.ConfigMaps(statusConfigMapNamespace).Get(statusConfigMapName, metav1.GetOptions{})
+	cm, err := sc.Core.ConfigMaps(StatusConfigMapNamespace).Get(StatusConfigMapName, metav1.GetOptions{})
 	if err != nil {
 		// Create a new ConfigMap if it doesn't exist
 		if !apierrors.IsNotFound(err) {
@@ -679,18 +711,18 @@ func updateMigrationStatus(sc *config.ScaledContext, status string, value string
 		}
 		cm = &corev1.ConfigMap{
 			ObjectMeta: metav1.ObjectMeta{
-				Name:      statusConfigMapName,
-				Namespace: statusConfigMapNamespace,
+				Name:      StatusConfigMapName,
+				Namespace: StatusConfigMapNamespace,
 			},
 		}
 	}
 
 	cm.Data = map[string]string{status: value}
 
-	if _, err := sc.Core.ConfigMaps(statusConfigMapNamespace).Update(cm); err != nil {
+	if _, err := sc.Core.ConfigMaps(StatusConfigMapNamespace).Update(cm); err != nil {
 		// If the ConfigMap does not exist, create it
 		if apierrors.IsNotFound(err) {
-			_, err = sc.Core.ConfigMaps(statusConfigMapNamespace).Create(cm)
+			_, err = sc.Core.ConfigMaps(StatusConfigMapNamespace).Create(cm)
 			if err != nil {
 				return fmt.Errorf("unable to create migration status configmap: %v", err)
 			}
