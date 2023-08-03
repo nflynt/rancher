@@ -41,6 +41,7 @@ const (
 	listAdUsersOperation      = "list-ad-users"
 	migrateAdUserOperation    = "migrate-ad-user"
 	activeDirectoryPrefix     = "activedirectory_user://"
+	localPrefix               = "local://"
 	StatusConfigMapName       = "ad-guid-migration"
 	StatusConfigMapNamespace  = "cattle-system"
 	StatusMigrationField      = "ad-guid-migration-status"
@@ -53,10 +54,14 @@ const (
 )
 
 type migrateUserWorkUnit struct {
-	distinguishedName string
-	guid              string
-	originalUser      *v3.User
-	duplicateUsers    []*v3.User
+	distinguishedName   string
+	guid                string
+	originalUser        *v3.User
+	duplicateUsers      []*v3.User
+	guidCRTBs           []v3.ClusterRoleTemplateBinding
+	duplicateLocalCRTBs []v3.ClusterRoleTemplateBinding
+	guidPRTBs           []v3.ProjectRoleTemplateBinding
+	duplicateLocalPRTBs []v3.ProjectRoleTemplateBinding
 }
 
 type missingUserWorkUnit struct {
@@ -316,6 +321,14 @@ func ListAdUsers(clientConfig *restclient.Config) error {
 	}
 
 	usersToMigrate, missingUsers, skippedUsers := identifyMigrationWorkUnits(users, lConn, adConfig)
+	err = collectCRTBs(&usersToMigrate, sc)
+	if err != nil {
+		return err
+	}
+	err = collectPRTBs(&usersToMigrate, sc)
+	if err != nil {
+		return err
+	}
 
 	for _, user := range skippedUsers {
 		logrus.Errorf("[%v] Unable to migrate user %v due to a connection failure. This user will be skipped!", listAdUsersOperation, user.originalUser.Name)
@@ -334,12 +347,12 @@ func ListAdUsers(clientConfig *restclient.Config) error {
 			logrus.Errorf("[%v] unable to migrate tokens for user %v: %v", listAdUsersOperation, userToMigrate.originalUser.Name, err)
 			continue
 		}
-		err = migrateCRTB(userToMigrate.guid, dnPrincipal, sc, dryRun)
+		err = migrateCRTBs(&userToMigrate, sc, dryRun)
 		if err != nil {
 			logrus.Errorf("[%v] unable to migrate CRTBs for user %v: %v", listAdUsersOperation, userToMigrate.originalUser.Name, err)
 			continue
 		}
-		err = migratePRTB(userToMigrate.guid, dnPrincipal, sc, dryRun)
+		err = migratePRTBs(&userToMigrate, sc, dryRun)
 		if err != nil {
 			logrus.Errorf("[%v] unable to migrate PRTBs for user %v: %v", listAdUsersOperation, userToMigrate.originalUser.Name, err)
 			continue
@@ -563,6 +576,15 @@ func adPrincipalId(user *v3.User) string {
 	return ""
 }
 
+func localPrincipalId(user *v3.User) string {
+	for _, principalId := range user.PrincipalIDs {
+		if strings.HasPrefix(principalId, localPrefix) {
+			return principalId
+		}
+	}
+	return ""
+}
+
 func isDistinguishedName(principalId string) bool {
 	// Note: this is the logic the original migration script used: DNs have commas
 	// in them, and GUIDs do not. This seems... potentially fragile? Could a DN exist
@@ -616,86 +638,194 @@ func migrateTokens(user migrateUserWorkUnit, newPrincipalID string, sc *config.S
 	return nil
 }
 
-func migrateCRTB(guid string, newPrincipalID string, sc *config.ScaledContext, dryRun bool) error {
+func collectCRTBs(workunits *[]migrateUserWorkUnit, sc *config.ScaledContext) error {
 	crtbInterface := sc.Management.ClusterRoleTemplateBindings("")
 	crtbList, err := crtbInterface.List(metav1.ListOptions{})
 	if err != nil {
 		logrus.Errorf("unable to fetch CRTB objects")
 	}
 
-	for _, oldCrtb := range crtbList.Items {
-		if activeDirectoryPrefix+guid == oldCrtb.UserPrincipalName {
-			if dryRun {
-				logrus.Infof("Dry Run:  Skipping update of %s", oldCrtb.Name)
+	for _, workunit := range *workunits {
+		guidPrincipal := activeDirectoryPrefix + workunit.guid
+		for _, crtb := range crtbList.Items {
+			if guidPrincipal == crtb.UserPrincipalName {
+				workunit.guidCRTBs = append(workunit.guidCRTBs, crtb)
 			} else {
-				newAnnotations := oldCrtb.Annotations
-				newAnnotations[adGUIDMigrationAnnotation] = guid
-				newLabels := oldCrtb.Labels
-				newLabels[adGUIDMigrationLabel] = migratedLabelValue
-				newCrtb := &v3.ClusterRoleTemplateBinding{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:         "",
-						Namespace:    oldCrtb.ObjectMeta.Namespace,
-						GenerateName: "crtb-",
-						Annotations:  newAnnotations,
-						Labels:       newLabels,
-					},
-					ClusterName:       oldCrtb.ClusterName,
-					UserName:          oldCrtb.UserName,
-					RoleTemplateName:  oldCrtb.RoleTemplateName,
-					UserPrincipalName: newPrincipalID,
-				}
-				_, err := crtbInterface.Create(newCrtb)
-				if err != nil {
-					return fmt.Errorf("unable to create new CRTB: %w", err)
-				}
-				err = sc.Management.ClusterRoleTemplateBindings("").DeleteNamespaced(oldCrtb.Namespace, oldCrtb.Name, &metav1.DeleteOptions{})
-				if err != nil {
-					return fmt.Errorf("unable to delete CRTB: %w", err)
+				for _, duplicateLocalUser := range workunit.duplicateUsers {
+					if localPrincipalId(duplicateLocalUser) == crtb.UserPrincipalName {
+						workunit.duplicateLocalCRTBs = append(workunit.duplicateLocalCRTBs, crtb)
+					}
 				}
 			}
 		}
 	}
+
 	return nil
 }
 
-func migratePRTB(guid string, newPrincipalID string, sc *config.ScaledContext, dryRun bool) error {
+func collectPRTBs(workunits *[]migrateUserWorkUnit, sc *config.ScaledContext) error {
 	prtbInterface := sc.Management.ProjectRoleTemplateBindings("")
 	prtbList, err := prtbInterface.List(metav1.ListOptions{})
 	if err != nil {
 		logrus.Errorf("unable to fetch PRTB objects")
 	}
 
-	for _, oldPrtb := range prtbList.Items {
-		if activeDirectoryPrefix+guid == oldPrtb.UserPrincipalName {
-			if dryRun {
-				logrus.Infof("Dry Run:  Skipping update of %s", oldPrtb.Name)
+	for _, workunit := range *workunits {
+		guidPrincipal := activeDirectoryPrefix + workunit.guid
+		for _, prtb := range prtbList.Items {
+			if guidPrincipal == prtb.UserPrincipalName {
+				workunit.guidPRTBs = append(workunit.guidPRTBs, prtb)
 			} else {
-				newAnnotations := oldPrtb.Annotations
-				newAnnotations[adGUIDMigrationAnnotation] = guid
-				newLabels := oldPrtb.Labels
-				newLabels[adGUIDMigrationLabel] = migratedLabelValue
-				newPrtb := &v3.ProjectRoleTemplateBinding{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:         "",
-						Namespace:    oldPrtb.ObjectMeta.Namespace,
-						GenerateName: "prtb-",
-						Annotations:  newAnnotations,
-						Labels:       newLabels,
-					},
-					ProjectName:       oldPrtb.ProjectName,
-					UserName:          oldPrtb.UserName,
-					RoleTemplateName:  oldPrtb.RoleTemplateName,
-					UserPrincipalName: newPrincipalID,
+				for _, duplicateLocalUser := range workunit.duplicateUsers {
+					if localPrincipalId(duplicateLocalUser) == prtb.UserPrincipalName {
+						workunit.duplicateLocalPRTBs = append(workunit.duplicateLocalPRTBs, prtb)
+					}
 				}
-				_, err := prtbInterface.Create(newPrtb)
-				if err != nil {
-					return fmt.Errorf("unable to create new PRTB: %w", err)
-				}
-				err = sc.Management.ProjectRoleTemplateBindings("").DeleteNamespaced(oldPrtb.Namespace, oldPrtb.Name, &metav1.DeleteOptions{})
-				if err != nil {
-					return fmt.Errorf("unable to delete PRTB: %w", err)
-				}
+			}
+		}
+	}
+
+	return nil
+}
+
+func migrateCRTBs(workunit *migrateUserWorkUnit, sc *config.ScaledContext, dryRun bool) error {
+	crtbInterface := sc.Management.ClusterRoleTemplateBindings("")
+	// First convert all GUID-based CRTBs to their equivalent Distinguished Name variants
+	dnPrincipalID := activeDirectoryPrefix + workunit.distinguishedName
+	for _, oldCrtb := range workunit.guidCRTBs {
+		if dryRun {
+			logrus.Infof("Dry Run:  Would migrate CRTB '%v' from GUID principal '%v' to DN principal '%v'", oldCrtb.Name, oldCrtb.UserPrincipalName, dnPrincipalID)
+		} else {
+			newAnnotations := oldCrtb.Annotations
+			newAnnotations[adGUIDMigrationAnnotation] = oldCrtb.UserPrincipalName
+			newLabels := oldCrtb.Labels
+			newLabels[adGUIDMigrationLabel] = migratedLabelValue
+			newCrtb := &v3.ClusterRoleTemplateBinding{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:         "",
+					Namespace:    oldCrtb.ObjectMeta.Namespace,
+					GenerateName: "crtb-",
+					Annotations:  newAnnotations,
+					Labels:       newLabels,
+				},
+				ClusterName:       oldCrtb.ClusterName,
+				UserName:          workunit.originalUser.Name,
+				RoleTemplateName:  oldCrtb.RoleTemplateName,
+				UserPrincipalName: dnPrincipalID,
+			}
+			_, err := crtbInterface.Create(newCrtb)
+			if err != nil {
+				return fmt.Errorf("unable to create new CRTB: %w", err)
+			}
+			err = sc.Management.ClusterRoleTemplateBindings("").DeleteNamespaced(oldCrtb.Namespace, oldCrtb.Name, &metav1.DeleteOptions{})
+			if err != nil {
+				return fmt.Errorf("unable to delete CRTB: %w", err)
+			}
+		}
+	}
+	// Now do the same for Local ID bindings on the users we are about to delete, pointing them instead to the merged
+	// original user that we will be keeping
+	localPrincipalID := localPrefix + workunit.originalUser.Name
+	for _, oldCrtb := range workunit.duplicateLocalCRTBs {
+		if dryRun {
+			logrus.Infof("Dry Run:  Would migrate CRTB '%v' from duplicate local user '%v' to original user '%v'", oldCrtb.Name, oldCrtb.UserPrincipalName, localPrincipalID)
+		} else {
+			newAnnotations := oldCrtb.Annotations
+			newAnnotations[adGUIDMigrationAnnotation] = oldCrtb.UserPrincipalName
+			newLabels := oldCrtb.Labels
+			newLabels[adGUIDMigrationLabel] = migratedLabelValue
+			newCrtb := &v3.ClusterRoleTemplateBinding{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:         "",
+					Namespace:    oldCrtb.ObjectMeta.Namespace,
+					GenerateName: "crtb-",
+					Annotations:  newAnnotations,
+					Labels:       newLabels,
+				},
+				ClusterName:       oldCrtb.ClusterName,
+				UserName:          workunit.originalUser.Name,
+				RoleTemplateName:  oldCrtb.RoleTemplateName,
+				UserPrincipalName: localPrincipalID,
+			}
+			_, err := crtbInterface.Create(newCrtb)
+			if err != nil {
+				return fmt.Errorf("unable to create new CRTB: %w", err)
+			}
+			err = sc.Management.ClusterRoleTemplateBindings("").DeleteNamespaced(oldCrtb.Namespace, oldCrtb.Name, &metav1.DeleteOptions{})
+			if err != nil {
+				return fmt.Errorf("unable to delete CRTB: %w", err)
+			}
+		}
+	}
+	return nil
+}
+
+func migratePRTBs(workunit *migrateUserWorkUnit, sc *config.ScaledContext, dryRun bool) error {
+	prtbInterface := sc.Management.ProjectRoleTemplateBindings("")
+	// First convert all GUID-based PRTBs to their equivalent Distinguished Name variants
+	dnPrincipalID := activeDirectoryPrefix + workunit.distinguishedName
+	for _, oldPrtb := range workunit.guidPRTBs {
+		if dryRun {
+			logrus.Infof("Dry Run:  Would migrate PRTB '%v' from GUID principal '%v' to DN principal '%v'", oldPrtb.Name, oldPrtb.UserPrincipalName, dnPrincipalID)
+		} else {
+			newAnnotations := oldPrtb.Annotations
+			newAnnotations[adGUIDMigrationAnnotation] = oldPrtb.UserPrincipalName
+			newLabels := oldPrtb.Labels
+			newLabels[adGUIDMigrationLabel] = migratedLabelValue
+			newPrtb := &v3.ProjectRoleTemplateBinding{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:         "",
+					Namespace:    oldPrtb.ObjectMeta.Namespace,
+					GenerateName: "prtb-",
+					Annotations:  newAnnotations,
+					Labels:       newLabels,
+				},
+				ProjectName:       oldPrtb.ProjectName,
+				UserName:          workunit.originalUser.Name,
+				RoleTemplateName:  oldPrtb.RoleTemplateName,
+				UserPrincipalName: dnPrincipalID,
+			}
+			_, err := prtbInterface.Create(newPrtb)
+			if err != nil {
+				return fmt.Errorf("unable to create new PRTB: %w", err)
+			}
+			err = sc.Management.ProjectRoleTemplateBindings("").DeleteNamespaced(oldPrtb.Namespace, oldPrtb.Name, &metav1.DeleteOptions{})
+			if err != nil {
+				return fmt.Errorf("unable to delete PRTB: %w", err)
+			}
+		}
+	}
+	// Now do the same for Local ID bindings on the users we are about to delete, pointing them instead to the merged
+	// original user that we will be keeping
+	localPrincipalID := localPrefix + workunit.originalUser.Name
+	for _, oldPrtb := range workunit.duplicateLocalPRTBs {
+		if dryRun {
+			logrus.Infof("Dry Run:  Would migrate PRTB '%v' from duplicate local user '%v' to original user '%v'", oldPrtb.Name, oldPrtb.UserPrincipalName, localPrincipalID)
+		} else {
+			newAnnotations := oldPrtb.Annotations
+			newAnnotations[adGUIDMigrationAnnotation] = oldPrtb.UserPrincipalName
+			newLabels := oldPrtb.Labels
+			newLabels[adGUIDMigrationLabel] = migratedLabelValue
+			newPrtb := &v3.ProjectRoleTemplateBinding{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:         "",
+					Namespace:    oldPrtb.ObjectMeta.Namespace,
+					GenerateName: "prtb-",
+					Annotations:  newAnnotations,
+					Labels:       newLabels,
+				},
+				ProjectName:       oldPrtb.ProjectName,
+				UserName:          workunit.originalUser.Name,
+				RoleTemplateName:  oldPrtb.RoleTemplateName,
+				UserPrincipalName: localPrincipalID,
+			}
+			_, err := prtbInterface.Create(newPrtb)
+			if err != nil {
+				return fmt.Errorf("unable to create new PRTB: %w", err)
+			}
+			err = sc.Management.ProjectRoleTemplateBindings("").DeleteNamespaced(oldPrtb.Namespace, oldPrtb.Name, &metav1.DeleteOptions{})
+			if err != nil {
+				return fmt.Errorf("unable to delete PRTB: %w", err)
 			}
 		}
 	}
