@@ -41,11 +41,12 @@ const (
 	listAdUsersOperation      = "list-ad-users"
 	migrateAdUserOperation    = "migrate-ad-user"
 	activeDirectoryPrefix     = "activedirectory_user://"
-	statusConfigMapName       = "ad-guid-migration"
-	statusConfigMapNamespace  = "cattle-system"
-	statusMigrationField      = "ad-guid-migration-status"
-	statusMigrationFinished   = "Finished"
-	statusMigrationRunning    = "Running"
+	StatusConfigMapName       = "ad-guid-migration"
+	StatusConfigMapNamespace  = "cattle-system"
+	StatusMigrationField      = "ad-guid-migration-status"
+	StatusMigrationFinished   = "Finished"
+	StatusMigrationRunning    = "Running"
+	StatusLoginDisabled       = "login is disabled while migration is running"
 	adGUIDMigrationLabel      = "ad-guid-migration"
 	adGUIDMigrationAnnotation = "ad-guid-migration-data"
 	migratedLabelValue        = "migrated"
@@ -81,6 +82,13 @@ type LdapConnectionPermanentlyFailed struct{}
 // Error provides a string representation of an LdapConnectionPermanentlyFailed
 func (e LdapConnectionPermanentlyFailed) Error() string {
 	return "ldap search failed to connect after exhausting maximum retry attempts"
+}
+
+type LoginDisabledError struct{}
+
+// Error provides a string representation of an LdapErrorNotFound
+func (e LoginDisabledError) Error() string {
+	return StatusLoginDisabled
 }
 
 func scaledContext(restConfig *restclient.Config) (*config.ScaledContext, error) {
@@ -297,7 +305,7 @@ func ListAdUsers(clientConfig *restclient.Config) error {
 	}
 	defer lConn.Close()
 
-	err = updateMigrationStatus(sc, statusMigrationField, statusMigrationRunning)
+	err = updateMigrationStatus(sc, StatusMigrationField, StatusMigrationRunning)
 	if err != nil {
 		return fmt.Errorf("unable to update migration status configmap: %v", err)
 	}
@@ -379,8 +387,8 @@ func ListAdUsers(clientConfig *restclient.Config) error {
 			// Having updated all permissions bindings and resolved all potential principal ID conflicts, it is
 			// finally safe to save the modified original user
 
-			userToMigrate.originalUser.Annotations[adGUIDMigrationLabel] = userToMigrate.guid
-			userToMigrate.originalUser.Labels[adGUIDMigrationAnnotation] = migratedLabelValue
+			userToMigrate.originalUser.Annotations[adGUIDMigrationAnnotation] = userToMigrate.guid
+			userToMigrate.originalUser.Labels[adGUIDMigrationLabel] = migratedLabelValue
 			_, err = sc.Management.Users("").Update(userToMigrate.originalUser)
 			if err != nil {
 				logrus.Errorf("[%v] failed to save modified user '%v' with: %v", listAdUsersOperation, userToMigrate.originalUser.Name, err)
@@ -389,7 +397,7 @@ func ListAdUsers(clientConfig *restclient.Config) error {
 		}
 	}
 
-	err = updateMigrationStatus(sc, statusMigrationField, statusMigrationFinished)
+	err = updateMigrationStatus(sc, StatusMigrationField, StatusMigrationFinished)
 	if err != nil {
 		return fmt.Errorf("unable to update migration status configmap: %v", err)
 	}
@@ -695,7 +703,7 @@ func migratePRTB(guid string, newPrincipalID string, sc *config.ScaledContext, d
 }
 
 func updateMigrationStatus(sc *config.ScaledContext, status string, value string) error {
-	cm, err := sc.Core.ConfigMaps(statusConfigMapNamespace).Get(statusConfigMapName, metav1.GetOptions{})
+	cm, err := sc.Core.ConfigMaps(StatusConfigMapNamespace).Get(StatusConfigMapName, metav1.GetOptions{})
 	if err != nil {
 		// Create a new ConfigMap if it doesn't exist
 		if !apierrors.IsNotFound(err) {
@@ -703,18 +711,18 @@ func updateMigrationStatus(sc *config.ScaledContext, status string, value string
 		}
 		cm = &corev1.ConfigMap{
 			ObjectMeta: metav1.ObjectMeta{
-				Name:      statusConfigMapName,
-				Namespace: statusConfigMapNamespace,
+				Name:      StatusConfigMapName,
+				Namespace: StatusConfigMapNamespace,
 			},
 		}
 	}
 
 	cm.Data = map[string]string{status: value}
 
-	if _, err := sc.Core.ConfigMaps(statusConfigMapNamespace).Update(cm); err != nil {
+	if _, err := sc.Core.ConfigMaps(StatusConfigMapNamespace).Update(cm); err != nil {
 		// If the ConfigMap does not exist, create it
 		if apierrors.IsNotFound(err) {
-			_, err = sc.Core.ConfigMaps(statusConfigMapNamespace).Create(cm)
+			_, err = sc.Core.ConfigMaps(StatusConfigMapNamespace).Create(cm)
 			if err != nil {
 				return fmt.Errorf("unable to create migration status configmap: %v", err)
 			}

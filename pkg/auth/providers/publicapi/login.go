@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/rancher/rancher/pkg/agent/clean"
 	"io/ioutil"
 	"net/http"
 	"strconv"
@@ -75,6 +76,9 @@ func (h *loginHandler) login(actionName string, action *types.Action, request *t
 		// otherwise, return a generic error message
 		if httperror.IsAPIError(err) {
 			return err
+		}
+		if err.Error() == clean.StatusLoginDisabled {
+			return httperror.WrapAPIError(err, httperror.ClusterUnavailable, clean.StatusLoginDisabled)
 		}
 		return httperror.WrapAPIError(err, httperror.ServerError, "Server error while authenticating")
 	}

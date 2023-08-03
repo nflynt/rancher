@@ -36,6 +36,7 @@ var scopes = []string{UserScope, GroupScope}
 type adProvider struct {
 	ctx         context.Context
 	authConfigs v3.AuthConfigInterface
+	configMaps  corev1.ConfigMapInterface
 	secrets     corev1.SecretInterface
 	userMGR     user.Manager
 	certs       string
@@ -47,6 +48,7 @@ func Configure(ctx context.Context, mgmtCtx *config.ScaledContext, userMGR user.
 	return &adProvider{
 		ctx:         ctx,
 		authConfigs: mgmtCtx.Management.AuthConfigs(""),
+		configMaps:  mgmtCtx.Core.ConfigMaps(""),
 		secrets:     mgmtCtx.Core.Secrets(""),
 		userMGR:     userMGR,
 		tokenMGR:    tokenMGR,
@@ -76,6 +78,12 @@ func (p *adProvider) AuthenticateUser(ctx context.Context, input interface{}) (v
 	login, ok := input.(*v32.BasicLogin)
 	if !ok {
 		return v3.Principal{}, nil, "", errors.New("unexpected input type")
+	}
+
+	migrationConfigMap, _ := p.configMaps.GetNamespaced("cattle-system", "ad-guid-migration", metav1.GetOptions{})
+	migrationStatus := migrationConfigMap.Data["ad-guid-migration-status"]
+	if migrationStatus == "Running" {
+		return v3.Principal{}, nil, "Unable to perform login while migration is running", fmt.Errorf("login is disabled while migration is running")
 	}
 
 	config, caPool, err := p.getActiveDirectoryConfig()
