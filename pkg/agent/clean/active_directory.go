@@ -244,7 +244,7 @@ func findDistinguishedName(guid string, lConn *ldapv3.Conn, adConfig *v3.ActiveD
 
 func findDistinguishedNameWithRetries(guid string, lConn *ldapv3.Conn, adConfig *v3.ActiveDirectoryConfig) (string, error) {
 	const maxRetries = 5
-	const retryDelay = time.Duration(10 * time.Second)
+	const retryDelay = 10 * time.Second
 
 	for retry := 0; retry < maxRetries; retry++ {
 		distinguishedName, err := findDistinguishedName(guid, lConn, adConfig)
@@ -394,14 +394,14 @@ func UnmigrateAdGUIDUsers(clientConfig *restclient.Config, dryRun bool, deleteMi
 		if dryRun {
 			logrus.Infof("[%v] User '%v' with GUID %v would have new principals:", listAdUsersOperation,
 				userToMigrate.guid, userToMigrate.originalUser.Name)
-			for _, principalId := range userToMigrate.originalUser.PrincipalIDs {
-				logrus.Infof("[%v]     '%v'", listAdUsersOperation, principalId)
+			for _, principalID := range userToMigrate.originalUser.PrincipalIDs {
+				logrus.Infof("[%v]     '%v'", listAdUsersOperation, principalID)
 			}
 		} else {
 			logrus.Debugf("[%v] User '%v' with GUID %v will have new principals:", listAdUsersOperation,
 				userToMigrate.guid, userToMigrate.originalUser.Name)
-			for _, principalId := range userToMigrate.originalUser.PrincipalIDs {
-				logrus.Debugf("[%v]     '%v'", listAdUsersOperation, principalId)
+			for _, principalID := range userToMigrate.originalUser.PrincipalIDs {
+				logrus.Debugf("[%v]     '%v'", listAdUsersOperation, principalID)
 			}
 		}
 
@@ -467,8 +467,8 @@ func identifyMigrationWorkUnits(users *v3.UserList, lConn *ldapv3.Conn, adConfig
 
 	// These assist with quickly identifying duplicates, so we don't have to scan the whole structure each time.
 	// We key on guid/dn, and the value is the index of that work unit in the associated table
-	knownGuidWorkUnits := map[string]int{}
-	knownGuidMissingUnits := map[string]int{}
+	knownGUIDWorkUnits := map[string]int{}
+	knownGUIDMissingUnits := map[string]int{}
 	knownDnWorkUnits := map[string]int{}
 
 	// Now we'll make two passes over the list of all users. First we need to identify any GUID based users, and
@@ -481,13 +481,13 @@ func identifyMigrationWorkUnits(users *v3.UserList, lConn *ldapv3.Conn, adConfig
 			logrus.Debugf("[%v] User '%v' has no AD principals, skipping", listAdUsersOperation, user.Name)
 			continue
 		}
-		principalId := adPrincipalId(&user)
-		logrus.Debugf("[%v] Processing AD User '%v' with principal ID: '%v'", listAdUsersOperation, user.Name, principalId)
-		if !isGuid(principalId) {
-			logrus.Debugf("[%v] '%v' Does not appear to be a GUID-based principal ID, taking no action.", listAdUsersOperation, principalId)
+		principalID := adPrincipalId(&user)
+		logrus.Debugf("[%v] Processing AD User '%v' with principal ID: '%v'", listAdUsersOperation, user.Name, principalID)
+		if !isGuid(principalID) {
+			logrus.Debugf("[%v] '%v' Does not appear to be a GUID-based principal ID, taking no action.", listAdUsersOperation, principalID)
 			continue
 		}
-		guid, _, err := getExternalIdAndScope(principalId)
+		guid, _, err := getExternalIdAndScope(principalID)
 		if err != nil {
 			// This really shouldn't be possible to hit, since isGuid will fail to parse anything that would
 			// cause getExternalIdAndScope to choke on the input, but for maximum safety we'll handle it anyway.
@@ -499,7 +499,7 @@ func identifyMigrationWorkUnits(users *v3.UserList, lConn *ldapv3.Conn, adConfig
 			skippedUsers = append(skippedUsers, skippedUserWorkUnit{guid: guid, originalUser: user.DeepCopy()})
 		} else {
 			// Check for guid-based duplicates here. If we find one, we don't need to perform an other LDAP lookup.
-			if i, exists := knownGuidWorkUnits[guid]; exists {
+			if i, exists := knownGUIDWorkUnits[guid]; exists {
 				logrus.Debugf("[%v] User %v is GUID-based (%v) and a duplicate of %v",
 					listAdUsersOperation, user.Name, guid, usersToMigrate[i].originalUser.Name)
 				// Make sure the oldest duplicate user is selected as the original
@@ -511,7 +511,7 @@ func identifyMigrationWorkUnits(users *v3.UserList, lConn *ldapv3.Conn, adConfig
 				}
 				continue
 			}
-			if i, exists := knownGuidMissingUnits[guid]; exists {
+			if i, exists := knownGUIDMissingUnits[guid]; exists {
 				logrus.Debugf("[%v] User %v is GUID-based (%v) and a duplicate of %v which is known to be missing",
 					listAdUsersOperation, user.Name, guid, missingUsers[i].originalUser.Name)
 				// We're less picky about the age of the oldest user here, because we aren't going to deduplicate these
@@ -525,11 +525,11 @@ func identifyMigrationWorkUnits(users *v3.UserList, lConn *ldapv3.Conn, adConfig
 				ldapPermanentlyFailed = true
 			} else if errors.Is(err, LdapErrorNotFound{}) {
 				logrus.Debugf("[%v] User %v is GUID-based (%v) and the Active Directory server doesn't know about it. Marking it as missing!", listAdUsersOperation, user.Name, guid)
-				knownGuidMissingUnits[guid] = len(missingUsers)
+				knownGUIDMissingUnits[guid] = len(missingUsers)
 				missingUsers = append(missingUsers, missingUserWorkUnit{guid: guid, originalUser: user.DeepCopy()})
 			} else {
 				logrus.Debugf("[%v] User %v is GUID-based (%v) and the Active Directory server knows it by the Distinguished Name '%v'", listAdUsersOperation, user.Name, guid, dn)
-				knownGuidWorkUnits[guid] = len(usersToMigrate)
+				knownGUIDWorkUnits[guid] = len(usersToMigrate)
 				knownDnWorkUnits[dn] = len(usersToMigrate)
 				var emptyDuplicateList []*v3.User
 				usersToMigrate = append(usersToMigrate, migrateUserWorkUnit{guid: guid, distinguishedName: dn, originalUser: user.DeepCopy(), duplicateUsers: emptyDuplicateList})
