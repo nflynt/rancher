@@ -292,9 +292,24 @@ func prepareClientContexts(clientConfig *restclient.Config) (*config.ScaledConte
 	return sc, adConfig, nil
 }
 
-// ListAdUsers is purely for debugging. If this is still here, fail the PR. :P
-func ListAdUsers(clientConfig *restclient.Config) error {
-	if os.Getenv("DRY_RUN") == "true" {
+// UnmigrateAdGUIDUsersOnce will ensure that the migration script will run only once.  cycle through all users, ctrb, ptrb, tokens and migrate them to an
+// appropriate DN-based PrincipalID.
+func UnmigrateAdGUIDUsersOnce(sc *config.ScaledContext) error {
+	migrationConfigMap, _ := sc.Core.ConfigMaps("cattle-system").GetNamespaced("cattle-system", "ad-guid-migration", metav1.GetOptions{})
+	if migrationConfigMap != nil {
+		migrationStatus := migrationConfigMap.Data["ad-guid-migration-status"]
+		if migrationStatus == StatusMigrationFinished {
+			logrus.Infof("The migration has already been completed")
+			return nil
+		}
+	}
+	return UnmigrateAdGUIDUsers(&sc.RESTConfig, false)
+}
+
+// UnmigrateAdGUIDUsers will cycle through all users, ctrb, ptrb, tokens and migrate them to an
+// appropriate DN-based PrincipalID.
+func UnmigrateAdGUIDUsers(clientConfig *restclient.Config, dryRun bool) error {
+	if dryRun || os.Getenv("DRY_RUN") == "true" {
 		logrus.Infof("[%v] DRY_RUN is true, no objects will be deleted/modified", listAdUsersOperation)
 		dryRun = true
 	}
