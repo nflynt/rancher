@@ -31,7 +31,6 @@ import (
 	"github.com/rancher/wrangler/pkg/ratelimit"
 	"github.com/sirupsen/logrus"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	restclient "k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -54,14 +53,16 @@ const (
 )
 
 type migrateUserWorkUnit struct {
-	distinguishedName   string
-	guid                string
-	originalUser        *v3.User
-	duplicateUsers      []*v3.User
-	guidCRTBs           []v3.ClusterRoleTemplateBinding
-	duplicateLocalCRTBs []v3.ClusterRoleTemplateBinding
-	guidPRTBs           []v3.ProjectRoleTemplateBinding
-	duplicateLocalPRTBs []v3.ProjectRoleTemplateBinding
+	distinguishedName    string
+	guid                 string
+	originalUser         *v3.User
+	duplicateUsers       []*v3.User
+	guidCRTBs            []v3.ClusterRoleTemplateBinding
+	duplicateLocalCRTBs  []v3.ClusterRoleTemplateBinding
+	guidPRTBs            []v3.ProjectRoleTemplateBinding
+	duplicateLocalPRTBs  []v3.ProjectRoleTemplateBinding
+	guidTokens           []v3.Token
+	duplicateLocalTokens []v3.Token
 }
 
 type missingUserWorkUnit struct {
@@ -321,6 +322,10 @@ func ListAdUsers(clientConfig *restclient.Config) error {
 	}
 
 	usersToMigrate, missingUsers, skippedUsers := identifyMigrationWorkUnits(users, lConn, adConfig)
+	err = collectTokens(&usersToMigrate, sc)
+	if err != nil {
+		return err
+	}
 	err = collectCRTBs(&usersToMigrate, sc)
 	if err != nil {
 		return err
@@ -338,11 +343,10 @@ func ListAdUsers(clientConfig *restclient.Config) error {
 	}
 
 	for _, userToMigrate := range usersToMigrate {
-		dnPrincipal := activeDirectoryPrefix + userToMigrate.distinguishedName
 		// If any of the binding replacements fail, then the resulting rancher state for this user is inconsistent
 		//   and we should NOT attempt to modify the user or delete any of its duplicates. This situation is unusual
 		//   and must be investigated by the local admin.
-		err := migrateTokens(userToMigrate, dnPrincipal, sc, dryRun)
+		err := migrateTokens(&userToMigrate, sc, dryRun)
 		if err != nil {
 			logrus.Errorf("[%v] unable to migrate tokens for user %v: %v", listAdUsersOperation, userToMigrate.originalUser.Name, err)
 			continue
@@ -607,34 +611,85 @@ func getExternalIdAndScope(principalID string) (string, string, error) {
 	return externalID, scope, nil
 }
 
-func migrateTokens(user migrateUserWorkUnit, newPrincipalID string, sc *config.ScaledContext, dryRun bool) error {
-	tokenLabelSelector := labels.SelectorFromSet(labels.Set{
-		"authn.management.cattle.io/token-userId": user.originalUser.Username,
-	})
-	tokenListOptions := metav1.ListOptions{
-		LabelSelector: tokenLabelSelector.String(),
-	}
+func migrateTokens(workunit *migrateUserWorkUnit, sc *config.ScaledContext, dryRun bool) error {
 	tokenInterface := sc.Management.Tokens("")
-
-	tokens, err := tokenInterface.List(tokenListOptions)
-	if err != nil {
-		return fmt.Errorf("failed to fetch tokens: %w", err)
-	}
-
-	for _, userToken := range tokens.Items {
-		userToken.UserPrincipal.Name = newPrincipalID
-		userToken.Annotations[adGUIDMigrationAnnotation] = user.guid
-		userToken.Labels[adGUIDMigrationLabel] = migratedLabelValue
-
+	dnPrincipalID := activeDirectoryPrefix + workunit.distinguishedName
+	for _, userToken := range workunit.guidTokens {
 		if dryRun {
-			logrus.Infof("Dry Run:  Skipping update of %s", userToken.Name)
+			logrus.Infof("Dry Run:  Would migrate Token '%v' from GUID principal '%v' to DN principal '%v'", userToken.Name, userToken.UserPrincipal.Name, dnPrincipalID)
 		} else {
-			_, err := tokenInterface.Update(&userToken)
+			latestToken, err := tokenInterface.Get(userToken.Name, metav1.GetOptions{})
 			if err != nil {
-				logrus.Errorf("unable to update token %v for principalId %v: %v", userToken.Name, newPrincipalID, err)
+				logrus.Errorf("Token %s no longer exists: %v", userToken.Name, err)
+			}
+			if userToken.Annotations == nil {
+				userToken.Annotations = make(map[string]string)
+			}
+			userToken.Annotations[adGUIDMigrationAnnotation] = workunit.guid
+			if userToken.Labels == nil {
+				userToken.Labels = make(map[string]string)
+			}
+			userToken.Labels[adGUIDMigrationLabel] = migratedLabelValue
+			userToken.UserPrincipal.Name = dnPrincipalID
+			userToken.SetResourceVersion(latestToken.ResourceVersion)
+			_, err = tokenInterface.Update(&userToken)
+			if err != nil {
+				return fmt.Errorf("unable to update token: %w", err)
 			}
 		}
 	}
+
+	localPrincipalID := localPrefix + workunit.originalUser.Name
+	for _, userToken := range workunit.guidTokens {
+		if dryRun {
+			logrus.Infof("Dry Run:  Would migrate Token '%v' from duplicate local user '%v' to original user '%v'", userToken.Name, userToken.UserPrincipal.Name, localPrincipalID)
+		} else {
+			latestToken, err := tokenInterface.Get(userToken.Name, metav1.GetOptions{})
+			if err != nil {
+				logrus.Errorf("Token %s no longer exists: %v", userToken.Name, err)
+			}
+			if userToken.Annotations == nil {
+				userToken.Annotations = make(map[string]string)
+			}
+			userToken.Annotations[adGUIDMigrationAnnotation] = workunit.guid
+			if userToken.Labels == nil {
+				userToken.Labels = make(map[string]string)
+			}
+			userToken.Labels[adGUIDMigrationLabel] = migratedLabelValue
+			userToken.UserPrincipal.Name = localPrincipalID
+			userToken.SetResourceVersion(latestToken.ResourceVersion)
+			_, err = tokenInterface.Update(&userToken)
+			if err != nil {
+				return fmt.Errorf("unable to update token: %w", err)
+			}
+		}
+	}
+	return nil
+}
+
+func collectTokens(workunits *[]migrateUserWorkUnit, sc *config.ScaledContext) error {
+	tokenInterface := sc.Management.Tokens("")
+	tokenList, err := tokenInterface.List(metav1.ListOptions{})
+	if err != nil {
+		logrus.Errorf("unable to fetch token objects")
+	}
+
+	for i, workunit := range *workunits {
+		guidPrincipal := activeDirectoryPrefix + workunit.guid
+		for _, token := range tokenList.Items {
+			if guidPrincipal == token.UserPrincipal.Name {
+				workunit.guidTokens = append(workunit.guidTokens, token)
+			} else {
+				for _, duplicateLocalUser := range workunit.duplicateUsers {
+					if localPrincipalId(duplicateLocalUser) == token.UserPrincipal.Name {
+						workunit.duplicateLocalTokens = append(workunit.duplicateLocalTokens, token)
+					}
+				}
+			}
+		}
+		(*workunits)[i] = workunit
+	}
+
 	return nil
 }
 
@@ -645,7 +700,7 @@ func collectCRTBs(workunits *[]migrateUserWorkUnit, sc *config.ScaledContext) er
 		logrus.Errorf("unable to fetch CRTB objects")
 	}
 
-	for _, workunit := range *workunits {
+	for i, workunit := range *workunits {
 		guidPrincipal := activeDirectoryPrefix + workunit.guid
 		for _, crtb := range crtbList.Items {
 			if guidPrincipal == crtb.UserPrincipalName {
@@ -658,6 +713,7 @@ func collectCRTBs(workunits *[]migrateUserWorkUnit, sc *config.ScaledContext) er
 				}
 			}
 		}
+		(*workunits)[i] = workunit
 	}
 
 	return nil
@@ -670,7 +726,7 @@ func collectPRTBs(workunits *[]migrateUserWorkUnit, sc *config.ScaledContext) er
 		logrus.Errorf("unable to fetch PRTB objects")
 	}
 
-	for _, workunit := range *workunits {
+	for i, workunit := range *workunits {
 		guidPrincipal := activeDirectoryPrefix + workunit.guid
 		for _, prtb := range prtbList.Items {
 			if guidPrincipal == prtb.UserPrincipalName {
@@ -683,6 +739,7 @@ func collectPRTBs(workunits *[]migrateUserWorkUnit, sc *config.ScaledContext) er
 				}
 			}
 		}
+		(*workunits)[i] = workunit
 	}
 
 	return nil
