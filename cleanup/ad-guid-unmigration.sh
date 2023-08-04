@@ -23,6 +23,7 @@ show_usage() {
 	echo ""
 	echo "Flags:"
 	echo -e "\t-dry-run Display the resources that would will be updated without making changes"
+    echo -e "\t-delete-missing Permanently remove user objects whose GUID cannot be found in Active Directory"
 }
 
 if [ $# -lt 1 ]
@@ -45,7 +46,11 @@ yaml=$(cat ad-guid-unmigration.yaml | sed -e 's=agent_image='"$agent_image"'=')
 if [ "$2" = "-dry-run" ]
 then
     # Uncomment the env var for dry-run mode
-    yaml=$(sed -e 's/# // ' <<< "$yaml")
+    yaml=$(sed -e 's/#dryrun // ' <<< "$yaml")
+elif [ "$2" = "-delete-missing" ]
+then
+    # Instead uncomment the env var for missing user cleanup
+    yaml=$(sed -e 's/#deletemissing // ' <<< "$yaml")
 fi
 
 echo "$yaml" | kubectl apply -f -

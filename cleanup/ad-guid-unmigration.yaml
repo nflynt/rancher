@@ -38,8 +38,10 @@ spec:
         - env:
             - name: AD_GUID_CLEANUP
               value: "true"
-            # - name: DRY_RUN
-              # value: "true"
+            #dryrun - name: DRY_RUN
+              #dryrun value: "true"
+            #deletemissing - name: AD_DELETE_MISSING_GUID_USERS
+              #deletemissing value: "true"
           image: agent_image
           imagePullPolicy: Always
           command: ["agent"]

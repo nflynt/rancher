@@ -303,15 +303,19 @@ func UnmigrateAdGUIDUsersOnce(sc *config.ScaledContext) error {
 			return nil
 		}
 	}
-	return UnmigrateAdGUIDUsers(&sc.RESTConfig, false)
+	return UnmigrateAdGUIDUsers(&sc.RESTConfig, false, false)
 }
 
 // UnmigrateAdGUIDUsers will cycle through all users, ctrb, ptrb, tokens and migrate them to an
 // appropriate DN-based PrincipalID.
-func UnmigrateAdGUIDUsers(clientConfig *restclient.Config, dryRun bool) error {
+func UnmigrateAdGUIDUsers(clientConfig *restclient.Config, dryRun bool, deleteMissingUsers bool) error {
 	if dryRun || os.Getenv("DRY_RUN") == "true" {
 		logrus.Infof("[%v] DRY_RUN is true, no objects will be deleted/modified", listAdUsersOperation)
 		dryRun = true
+		deleteMissingUsers = false
+	} else if deleteMissingUsers || os.Getenv("AD_DELETE_MISSING_GUID_USERS") == "true" {
+		logrus.Infof("[%v] AD_DELETE_MISSING_GUID_USERS is true, GUID-based users not present in Active Directory will be deleted", listAdUsersOperation)
+		deleteMissingUsers = true
 	}
 
 	sc, adConfig, err := prepareClientContexts(clientConfig)
@@ -353,8 +357,16 @@ func UnmigrateAdGUIDUsers(clientConfig *restclient.Config, dryRun bool) error {
 	for _, user := range skippedUsers {
 		logrus.Errorf("[%v] Unable to migrate user %v due to a connection failure. This user will be skipped!", listAdUsersOperation, user.originalUser.Name)
 	}
-	for _, user := range missingUsers {
-		logrus.Errorf("[%v] User %v with GUID %v does not seem to exist in Active Directory. They may have been deleted. This user will be skipped!", listAdUsersOperation, user.originalUser.Name, user.guid)
+	for _, missingUser := range missingUsers {
+		if deleteMissingUsers {
+			logrus.Infof("[%v] User %v with GUID %v does not seem to exist in Active Directory, and deleteMissingUsers is true. Proceeding to delete this user permanently.", listAdUsersOperation, missingUser.originalUser.Name, missingUser.guid)
+			err = sc.Management.Users("").Delete(missingUser.originalUser.Name, &metav1.DeleteOptions{})
+			if err != nil {
+				logrus.Errorf("[%v] failed to delete missing user '%v' with: %v", listAdUsersOperation, missingUser.originalUser.Name, err)
+			}
+		} else {
+			logrus.Errorf("[%v] User %v with GUID %v does not seem to exist in Active Directory. They may have been deleted. This user will be skipped!", listAdUsersOperation, missingUser.originalUser.Name, missingUser.guid)
+		}
 	}
 
 	for _, userToMigrate := range usersToMigrate {
