@@ -81,7 +81,7 @@ func main() {
 			}
 			err = bindingErr
 		} else if os.Getenv("AD_GUID_CLEANUP") == "true" {
-			err = clean.ListAdUsers(nil)
+			err = clean.UnmigrateAdGUIDUsers(nil, false)
 		} else {
 			err = run(ctx)
 		}
