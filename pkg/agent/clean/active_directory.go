@@ -388,7 +388,7 @@ func UnmigrateAdGUIDUsers(clientConfig *restclient.Config, dryRun bool, deleteMi
 			logrus.Errorf("[%v] unable to migrate PRTBs for user %v: %v", listAdUsersOperation, userToMigrate.originalUser.Name, err)
 			continue
 		}
-		replaceGuidPrincipalWithDn(userToMigrate.originalUser, userToMigrate.distinguishedName)
+		replaceGUIDPrincipalWithDn(userToMigrate.originalUser, userToMigrate.distinguishedName)
 
 		// In dry run mode (and while debugging) we want to print the before/after state of the user principals
 		if dryRun {
@@ -424,9 +424,8 @@ func UnmigrateAdGUIDUsers(clientConfig *restclient.Config, dryRun bool, deleteMi
 					// this may result in a duplicate AD principal ID. Notify and skip.
 					logrus.Errorf("[%v] cannot safely save modifications to user %v, skipping", listAdUsersOperation, userToMigrate.originalUser.Name)
 					continue
-				} else {
-					logrus.Infof("[%v] deleted duplicate user %v", listAdUsersOperation, duplicateUser.Name)
 				}
+				logrus.Infof("[%v] deleted duplicate user %v", listAdUsersOperation, duplicateUser.Name)
 			}
 			// Having updated all permissions bindings and resolved all potential principal ID conflicts, it is
 			// finally safe to save the modified original user
@@ -481,13 +480,13 @@ func identifyMigrationWorkUnits(users *v3.UserList, lConn *ldapv3.Conn, adConfig
 			logrus.Debugf("[%v] User '%v' has no AD principals, skipping", listAdUsersOperation, user.Name)
 			continue
 		}
-		principalID := adPrincipalId(&user)
+		principalID := adPrincipalID(&user)
 		logrus.Debugf("[%v] Processing AD User '%v' with principal ID: '%v'", listAdUsersOperation, user.Name, principalID)
-		if !isGuid(principalID) {
+		if !isGUID(principalID) {
 			logrus.Debugf("[%v] '%v' Does not appear to be a GUID-based principal ID, taking no action.", listAdUsersOperation, principalID)
 			continue
 		}
-		guid, _, err := getExternalIdAndScope(principalID)
+		guid, _, err := getExternalIDAndScope(principalID)
 		if err != nil {
 			// This really shouldn't be possible to hit, since isGuid will fail to parse anything that would
 			// cause getExternalIdAndScope to choke on the input, but for maximum safety we'll handle it anyway.
@@ -551,13 +550,13 @@ func identifyMigrationWorkUnits(users *v3.UserList, lConn *ldapv3.Conn, adConfig
 			logrus.Debugf("[%v] User '%v' has no AD principals, skipping", listAdUsersOperation, user.Name)
 			continue
 		}
-		principalId := adPrincipalId(&user)
-		logrus.Debugf("[%v] Processing AD User '%v' with principal ID: '%v'", listAdUsersOperation, user.Name, principalId)
-		if isGuid(principalId) {
-			logrus.Debugf("[%v] '%v' Does not appear to be a DN-based principal ID, taking no action.", listAdUsersOperation, principalId)
+		principalID := adPrincipalID(&user)
+		logrus.Debugf("[%v] Processing AD User '%v' with principal ID: '%v'", listAdUsersOperation, user.Name, principalID)
+		if isGUID(principalID) {
+			logrus.Debugf("[%v] '%v' Does not appear to be a DN-based principal ID, taking no action.", listAdUsersOperation, principalID)
 			continue
 		}
-		dn, _, err := getExternalIdAndScope(principalId)
+		dn, _, err := getExternalIDAndScope(principalID)
 		if err != nil {
 			logrus.Errorf("[%v] Failed to extract DN from principal '%v', cannot process this user! (%v)", listAdUsersOperation, err, user.Name)
 			continue
@@ -578,11 +577,11 @@ func identifyMigrationWorkUnits(users *v3.UserList, lConn *ldapv3.Conn, adConfig
 	return usersToMigrate, missingUsers, skippedUsers
 }
 
-func replaceGuidPrincipalWithDn(user *v3.User, dn string) {
+func replaceGUIDPrincipalWithDn(user *v3.User, dn string) {
 	var principalIDs []string
-	for _, principalId := range user.PrincipalIDs {
-		if !strings.HasPrefix(principalId, activeDirectoryPrefix) {
-			principalIDs = append(principalIDs, principalId)
+	for _, principalID := range user.PrincipalIDs {
+		if !strings.HasPrefix(principalID, activeDirectoryPrefix) {
+			principalIDs = append(principalIDs, principalID)
 		}
 	}
 	principalIDs = append(principalIDs, activeDirectoryPrefix+dn)
@@ -590,45 +589,45 @@ func replaceGuidPrincipalWithDn(user *v3.User, dn string) {
 }
 
 func isAdUser(user *v3.User) bool {
-	for _, principalId := range user.PrincipalIDs {
-		if strings.HasPrefix(principalId, activeDirectoryPrefix) {
+	for _, principalID := range user.PrincipalIDs {
+		if strings.HasPrefix(principalID, activeDirectoryPrefix) {
 			return true
 		}
 	}
 	return false
 }
 
-func adPrincipalId(user *v3.User) string {
-	for _, principalId := range user.PrincipalIDs {
-		if strings.HasPrefix(principalId, activeDirectoryPrefix) {
-			return principalId
+func adPrincipalID(user *v3.User) string {
+	for _, principalID := range user.PrincipalIDs {
+		if strings.HasPrefix(principalID, activeDirectoryPrefix) {
+			return principalID
 		}
 	}
 	return ""
 }
 
-func localPrincipalId(user *v3.User) string {
-	for _, principalId := range user.PrincipalIDs {
-		if strings.HasPrefix(principalId, localPrefix) {
-			return principalId
+func localPrincipalID(user *v3.User) string {
+	for _, principalID := range user.PrincipalIDs {
+		if strings.HasPrefix(principalID, localPrefix) {
+			return principalID
 		}
 	}
 	return ""
 }
 
-func isDistinguishedName(principalId string) bool {
+func isDistinguishedName(principalID string) bool {
 	// Note: this is the logic the original migration script used: DNs have commas
 	// in them, and GUIDs do not. This seems... potentially fragile? Could a DN exist
 	// in the root of the tree (or perhaps be specified relative to a branch?) and thus
 	// be free of commas?
-	return strings.Contains(principalId, ",")
+	return strings.Contains(principalID, ",")
 }
 
-func isGuid(principalId string) bool {
-	return !isDistinguishedName(principalId)
+func isGUID(principalID string) bool {
+	return !isDistinguishedName(principalID)
 }
 
-func getExternalIdAndScope(principalID string) (string, string, error) {
+func getExternalIDAndScope(principalID string) (string, string, error) {
 	parts := strings.SplitN(principalID, ":", 2)
 	if len(parts) != 2 {
 		return "", "", errors.Errorf("invalid id %v", principalID)
@@ -708,7 +707,7 @@ func collectTokens(workunits *[]migrateUserWorkUnit, sc *config.ScaledContext) e
 				workunit.guidTokens = append(workunit.guidTokens, token)
 			} else {
 				for _, duplicateLocalUser := range workunit.duplicateUsers {
-					if localPrincipalId(duplicateLocalUser) == token.UserPrincipal.Name {
+					if localPrincipalID(duplicateLocalUser) == token.UserPrincipal.Name {
 						workunit.duplicateLocalTokens = append(workunit.duplicateLocalTokens, token)
 					}
 				}
@@ -734,7 +733,7 @@ func collectCRTBs(workunits *[]migrateUserWorkUnit, sc *config.ScaledContext) er
 				workunit.guidCRTBs = append(workunit.guidCRTBs, crtb)
 			} else {
 				for _, duplicateLocalUser := range workunit.duplicateUsers {
-					if localPrincipalId(duplicateLocalUser) == crtb.UserPrincipalName {
+					if localPrincipalID(duplicateLocalUser) == crtb.UserPrincipalName {
 						workunit.duplicateLocalCRTBs = append(workunit.duplicateLocalCRTBs, crtb)
 					}
 				}
@@ -760,7 +759,7 @@ func collectPRTBs(workunits *[]migrateUserWorkUnit, sc *config.ScaledContext) er
 				workunit.guidPRTBs = append(workunit.guidPRTBs, prtb)
 			} else {
 				for _, duplicateLocalUser := range workunit.duplicateUsers {
-					if localPrincipalId(duplicateLocalUser) == prtb.UserPrincipalName {
+					if localPrincipalID(duplicateLocalUser) == prtb.UserPrincipalName {
 						workunit.duplicateLocalPRTBs = append(workunit.duplicateLocalPRTBs, prtb)
 					}
 				}
