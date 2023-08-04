@@ -668,7 +668,7 @@ func migrateTokens(workunit *migrateUserWorkUnit, sc *config.ScaledContext, dryR
 	}
 
 	localPrincipalID := localPrefix + workunit.originalUser.Name
-	for _, userToken := range workunit.guidTokens {
+	for _, userToken := range workunit.duplicateLocalTokens {
 		if dryRun {
 			logrus.Infof("[%v] DRY RUN: would migrate Token '%v' from duplicate local user '%v' to original user '%v'", migrateTokensOperation, userToken.Name, userToken.UserPrincipal.Name, localPrincipalID)
 		} else {
