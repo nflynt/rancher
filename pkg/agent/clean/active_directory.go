@@ -1,5 +1,3 @@
-//go:build !windows
-
 /*
 Look for any active directory users with a GUID type principal.
 Convert these users to a distinguished name instead.
