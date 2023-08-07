@@ -4,12 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/rancher/rancher/pkg/agent/clean"
 	"io/ioutil"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/rancher/rancher/pkg/agent/clean"
 
 	"github.com/rancher/norman/httperror"
 	"github.com/rancher/norman/types"

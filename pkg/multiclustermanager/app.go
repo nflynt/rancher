@@ -2,11 +2,12 @@ package multiclustermanager
 
 import (
 	"context"
-	"github.com/rancher/rancher/pkg/agent/clean"
 	"net/http"
 	"os"
 	"sync"
 	"time"
+
+	"github.com/rancher/rancher/pkg/agent/clean"
 
 	"github.com/pkg/errors"
 	"github.com/rancher/norman/types"
