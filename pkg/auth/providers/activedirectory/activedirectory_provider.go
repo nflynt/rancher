@@ -24,11 +24,17 @@ import (
 )
 
 const (
-	Name              = "activedirectory"
-	UserScope         = Name + "_user"
-	GroupScope        = Name + "_group"
-	ObjectClass       = "objectClass"
-	MemberOfAttribute = "memberOf"
+	Name                     = "activedirectory"
+	UserScope                = Name + "_user"
+	GroupScope               = Name + "_group"
+	ObjectClass              = "objectClass"
+	MemberOfAttribute        = "memberOf"
+	StatusConfigMapName      = "ad-guid-migration"
+	StatusConfigMapNamespace = "cattle-system"
+	StatusMigrationField     = "ad-guid-migration-status"
+	StatusMigrationFinished  = "Finished"
+	StatusMigrationRunning   = "Running"
+	StatusLoginDisabled      = "login is disabled while migration is running"
 )
 
 var scopes = []string{UserScope, GroupScope}
@@ -80,10 +86,14 @@ func (p *adProvider) AuthenticateUser(ctx context.Context, input interface{}) (v
 		return v3.Principal{}, nil, "", errors.New("unexpected input type")
 	}
 
-	migrationConfigMap, _ := p.configMaps.GetNamespaced("cattle-system", "ad-guid-migration", metav1.GetOptions{})
-	migrationStatus := migrationConfigMap.Data["ad-guid-migration-status"]
-	if migrationStatus == "Running" {
-		return v3.Principal{}, nil, "Unable to perform login while migration is running", fmt.Errorf("login is disabled while migration is running")
+	migrationConfigMap, err := p.configMaps.GetNamespaced(StatusConfigMapNamespace, StatusConfigMapName, metav1.GetOptions{})
+	if err != nil {
+		logrus.Infof("ad-guid-migration configmap does not exist, allowing logins by default: %v", err)
+	} else {
+		migrationStatus := migrationConfigMap.Data[StatusMigrationField]
+		if migrationStatus == StatusMigrationRunning {
+			return v3.Principal{}, nil, "Unable to perform login while migration is running", LoginDisabledError{}
+		}
 	}
 
 	config, caPool, err := p.getActiveDirectoryConfig()
@@ -247,6 +257,13 @@ func (p *adProvider) GetUserExtraAttributes(userPrincipal v3.Principal) map[stri
 	return extras
 }
 
+type LoginDisabledError struct{}
+
+// Error provides a string representation of an LdapErrorNotFound
+func (e LoginDisabledError) Error() string {
+	return StatusLoginDisabled
+}
+
 // IsDisabledProvider checks if the Azure Active Directory provider is currently disabled in Rancher.
 func (p *adProvider) IsDisabledProvider() (bool, error) {
 	adConfig, _, err := p.getActiveDirectoryConfig()
@@ -254,4 +271,9 @@ func (p *adProvider) IsDisabledProvider() (bool, error) {
 		return false, err
 	}
 	return !adConfig.Enabled, nil
+}
+
+// IsStatusLoginDisabledError will return true when the login is disabled due to a migration in process.
+func IsStatusLoginDisabledError(err error) bool {
+	return err.Error() == StatusLoginDisabled
 }

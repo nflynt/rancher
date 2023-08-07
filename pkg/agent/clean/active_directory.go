@@ -13,6 +13,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/rancher/rancher/pkg/auth/providers/activedirectory"
+
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 
@@ -41,15 +43,10 @@ const (
 	migratePrtbsOperation     = "migrate-ad-prtbs"
 	activeDirectoryPrefix     = "activedirectory_user://"
 	localPrefix               = "local://"
-	StatusConfigMapName       = "ad-guid-migration"
-	StatusConfigMapNamespace  = "cattle-system"
-	StatusMigrationField      = "ad-guid-migration-status"
-	StatusMigrationFinished   = "Finished"
-	StatusMigrationRunning    = "Running"
-	StatusLoginDisabled       = "login is disabled while migration is running"
 	adGUIDMigrationLabel      = "ad-guid-migration"
 	adGUIDMigrationAnnotation = "ad-guid-migration-data"
 	migratedLabelValue        = "migrated"
+	migrationPreviousName     = "ad-guid-previous-name"
 )
 
 type migrateUserWorkUnit struct {
@@ -88,13 +85,6 @@ type LdapConnectionPermanentlyFailed struct{}
 // Error provides a string representation of an LdapConnectionPermanentlyFailed
 func (e LdapConnectionPermanentlyFailed) Error() string {
 	return "ldap search failed to connect after exhausting maximum retry attempts"
-}
-
-type LoginDisabledError struct{}
-
-// Error provides a string representation of an LdapErrorNotFound
-func (e LoginDisabledError) Error() string {
-	return StatusLoginDisabled
 }
 
 func scaledContext(restConfig *restclient.Config) (*config.ScaledContext, error) {
@@ -298,7 +288,7 @@ func UnmigrateAdGUIDUsersOnce(sc *config.ScaledContext) error {
 	migrationConfigMap, _ := sc.Core.ConfigMaps("cattle-system").GetNamespaced("cattle-system", "ad-guid-migration", metav1.GetOptions{})
 	if migrationConfigMap != nil {
 		migrationStatus := migrationConfigMap.Data["ad-guid-migration-status"]
-		if migrationStatus == StatusMigrationFinished {
+		if migrationStatus == activedirectory.StatusMigrationFinished {
 			logrus.Debugf("[%v] ad-guid migration has already been completed, refusing to run again at startup", migrateAdUserOperation)
 			return nil
 		}
@@ -330,7 +320,7 @@ func UnmigrateAdGUIDUsers(clientConfig *restclient.Config, dryRun bool, deleteMi
 	}
 	defer lConn.Close()
 
-	err = updateMigrationStatus(sc, StatusMigrationField, StatusMigrationRunning)
+	err = updateMigrationStatus(sc, activedirectory.StatusMigrationField, activedirectory.StatusMigrationRunning)
 	if err != nil {
 		return fmt.Errorf("unable to update migration status configmap: %v", err)
 	}
@@ -440,7 +430,7 @@ func UnmigrateAdGUIDUsers(clientConfig *restclient.Config, dryRun bool, deleteMi
 		}
 	}
 
-	err = updateMigrationStatus(sc, StatusMigrationField, StatusMigrationFinished)
+	err = updateMigrationStatus(sc, activedirectory.StatusMigrationField, activedirectory.StatusMigrationFinished)
 	if err != nil {
 		return fmt.Errorf("unable to update migration status configmap: %v", err)
 	}
@@ -648,17 +638,16 @@ func migrateTokens(workunit *migrateUserWorkUnit, sc *config.ScaledContext, dryR
 			if err != nil {
 				logrus.Errorf("[%v] token %s no longer exists: %v", migrateTokensOperation, userToken.Name, err)
 			}
-			if userToken.Annotations == nil {
-				userToken.Annotations = make(map[string]string)
+			if latestToken.Annotations == nil {
+				latestToken.Annotations = make(map[string]string)
 			}
-			userToken.Annotations[adGUIDMigrationAnnotation] = workunit.guid
-			if userToken.Labels == nil {
-				userToken.Labels = make(map[string]string)
+			latestToken.Annotations[adGUIDMigrationAnnotation] = workunit.guid
+			if latestToken.Labels == nil {
+				latestToken.Labels = make(map[string]string)
 			}
-			userToken.Labels[adGUIDMigrationLabel] = migratedLabelValue
-			userToken.UserPrincipal.Name = dnPrincipalID
-			userToken.SetResourceVersion(latestToken.ResourceVersion)
-			_, err = tokenInterface.Update(&userToken)
+			latestToken.Labels[adGUIDMigrationLabel] = migratedLabelValue
+			latestToken.UserPrincipal.Name = dnPrincipalID
+			_, err = tokenInterface.Update(latestToken)
 			if err != nil {
 				return fmt.Errorf("[%v] unable to update token: %w", migrateTokensOperation, err)
 			}
@@ -674,17 +663,16 @@ func migrateTokens(workunit *migrateUserWorkUnit, sc *config.ScaledContext, dryR
 			if err != nil {
 				logrus.Errorf("[%v] token %s no longer exists: %v", migrateTokensOperation, userToken.Name, err)
 			}
-			if userToken.Annotations == nil {
-				userToken.Annotations = make(map[string]string)
+			if latestToken.Annotations == nil {
+				latestToken.Annotations = make(map[string]string)
 			}
-			userToken.Annotations[adGUIDMigrationAnnotation] = workunit.guid
-			if userToken.Labels == nil {
-				userToken.Labels = make(map[string]string)
+			latestToken.Annotations[adGUIDMigrationAnnotation] = workunit.guid
+			if latestToken.Labels == nil {
+				latestToken.Labels = make(map[string]string)
 			}
-			userToken.Labels[adGUIDMigrationLabel] = migratedLabelValue
-			userToken.UserPrincipal.Name = localPrincipalID
-			userToken.SetResourceVersion(latestToken.ResourceVersion)
-			_, err = tokenInterface.Update(&userToken)
+			latestToken.Labels[adGUIDMigrationLabel] = migratedLabelValue
+			latestToken.UserPrincipal.Name = localPrincipalID
+			_, err = tokenInterface.Update(latestToken)
 			if err != nil {
 				return fmt.Errorf("[%v] unable to update token: %w", migrateTokensOperation, err)
 			}
@@ -790,6 +778,7 @@ func migrateCRTBs(workunit *migrateUserWorkUnit, sc *config.ScaledContext, dryRu
 			if newLabels == nil {
 				newLabels = make(map[string]string)
 			}
+			newLabels[migrationPreviousName] = oldCrtb.Name
 			newLabels[adGUIDMigrationLabel] = migratedLabelValue
 			newCrtb := &v3.ClusterRoleTemplateBinding{
 				ObjectMeta: metav1.ObjectMeta{
@@ -830,6 +819,7 @@ func migrateCRTBs(workunit *migrateUserWorkUnit, sc *config.ScaledContext, dryRu
 			if newLabels == nil {
 				newLabels = make(map[string]string)
 			}
+			newLabels[migrationPreviousName] = oldCrtb.Name
 			newLabels[adGUIDMigrationLabel] = migratedLabelValue
 			newCrtb := &v3.ClusterRoleTemplateBinding{
 				ObjectMeta: metav1.ObjectMeta{
@@ -874,6 +864,7 @@ func migratePRTBs(workunit *migrateUserWorkUnit, sc *config.ScaledContext, dryRu
 			if newLabels == nil {
 				newLabels = make(map[string]string)
 			}
+			newLabels[migrationPreviousName] = oldPrtb.Name
 			newLabels[adGUIDMigrationLabel] = migratedLabelValue
 			newPrtb := &v3.ProjectRoleTemplateBinding{
 				ObjectMeta: metav1.ObjectMeta{
@@ -914,6 +905,7 @@ func migratePRTBs(workunit *migrateUserWorkUnit, sc *config.ScaledContext, dryRu
 			if newLabels == nil {
 				newLabels = make(map[string]string)
 			}
+			newLabels[migrationPreviousName] = oldPrtb.Name
 			newLabels[adGUIDMigrationLabel] = migratedLabelValue
 			newPrtb := &v3.ProjectRoleTemplateBinding{
 				ObjectMeta: metav1.ObjectMeta{
@@ -942,7 +934,7 @@ func migratePRTBs(workunit *migrateUserWorkUnit, sc *config.ScaledContext, dryRu
 }
 
 func updateMigrationStatus(sc *config.ScaledContext, status string, value string) error {
-	cm, err := sc.Core.ConfigMaps(StatusConfigMapNamespace).Get(StatusConfigMapName, metav1.GetOptions{})
+	cm, err := sc.Core.ConfigMaps(activedirectory.StatusConfigMapNamespace).Get(activedirectory.StatusConfigMapName, metav1.GetOptions{})
 	if err != nil {
 		// Create a new ConfigMap if it doesn't exist
 		if !apierrors.IsNotFound(err) {
@@ -950,18 +942,18 @@ func updateMigrationStatus(sc *config.ScaledContext, status string, value string
 		}
 		cm = &corev1.ConfigMap{
 			ObjectMeta: metav1.ObjectMeta{
-				Name:      StatusConfigMapName,
-				Namespace: StatusConfigMapNamespace,
+				Name:      activedirectory.StatusConfigMapName,
+				Namespace: activedirectory.StatusConfigMapNamespace,
 			},
 		}
 	}
 
 	cm.Data = map[string]string{status: value}
 
-	if _, err := sc.Core.ConfigMaps(StatusConfigMapNamespace).Update(cm); err != nil {
+	if _, err := sc.Core.ConfigMaps(activedirectory.StatusConfigMapNamespace).Update(cm); err != nil {
 		// If the ConfigMap does not exist, create it
 		if apierrors.IsNotFound(err) {
-			_, err = sc.Core.ConfigMaps(StatusConfigMapNamespace).Create(cm)
+			_, err = sc.Core.ConfigMaps(activedirectory.StatusConfigMapNamespace).Create(cm)
 			if err != nil {
 				return fmt.Errorf("[%v] unable to create migration status configmap: %v", migrateAdUserOperation, err)
 			}

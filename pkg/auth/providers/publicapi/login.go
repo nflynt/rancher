@@ -10,8 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/rancher/rancher/pkg/agent/clean"
-
 	"github.com/rancher/norman/httperror"
 	"github.com/rancher/norman/types"
 	v32 "github.com/rancher/rancher/pkg/apis/management.cattle.io/v3"
@@ -78,8 +76,8 @@ func (h *loginHandler) login(actionName string, action *types.Action, request *t
 		if httperror.IsAPIError(err) {
 			return err
 		}
-		if err.Error() == clean.StatusLoginDisabled {
-			return httperror.WrapAPIError(err, httperror.ClusterUnavailable, clean.StatusLoginDisabled)
+		if activedirectory.IsStatusLoginDisabledError(err) {
+			return httperror.WrapAPIError(err, httperror.ClusterUnavailable, activedirectory.StatusLoginDisabled)
 		}
 		return httperror.WrapAPIError(err, httperror.ServerError, "Server error while authenticating")
 	}
