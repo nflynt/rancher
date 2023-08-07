@@ -196,7 +196,7 @@ func ldapConnection(config *v3.ActiveDirectoryConfig) (*ldapv3.Conn, error) {
 // EscapeUUID will take a UUID string in string form and will add backslashes to every 2nd character.
 // The returned result is the string that needs to be added to the LDAP filter to properly filter
 // by objectGUID, which is stored as binary data.
-func EscapeUUID(s string) string {
+func escapeUUID(s string) string {
 	var buffer bytes.Buffer
 	var n1 = 1
 	var l1 = len(s) - 1
@@ -211,7 +211,7 @@ func EscapeUUID(s string) string {
 }
 
 func findDistinguishedName(guid string, lConn *ldapv3.Conn, adConfig *v3.ActiveDirectoryConfig) (string, error) {
-	query := fmt.Sprintf("(%v=%v)", "objectGUID", EscapeUUID(guid))
+	query := fmt.Sprintf("(%v=%v)", "objectGUID", escapeUUID(guid))
 	search := ldapv3.NewSearchRequest(adConfig.UserSearchBase, ldapv3.ScopeWholeSubtree, ldapv3.NeverDerefAliases,
 		0, 0, false,
 		query, ldap.GetUserSearchAttributes("memberOf", "objectClass", adConfig), nil)
