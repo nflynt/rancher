@@ -8,8 +8,8 @@ RED='\033[0;31m'
 # Location of the yaml to use to deploy the cleanup job
 yaml_url=https://raw.githubusercontent.com/rancher/rancher/master/cleanup/ad-guid-unmigration.yaml
 
-# 120 is equal to a minute as the sleep is half a second
-timeout=120
+# 7200 is equal to one hour as the sleep is half a second
+timeout=7200
 
 # Agent image to use in the yaml file
 agent_image="$1"
