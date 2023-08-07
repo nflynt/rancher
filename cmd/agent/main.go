@@ -81,7 +81,9 @@ func main() {
 			}
 			err = bindingErr
 		} else if os.Getenv("AD_GUID_CLEANUP") == "true" {
-			err = clean.UnmigrateAdGUIDUsers(nil, false, false)
+			dryrun := os.Getenv("DRY_RUN") == "true"
+			deleteMissingUsers := os.Getenv("AD_DELETE_MISSING_GUID_USERS") == "true"
+			err = clean.UnmigrateAdGUIDUsers(nil, dryrun, deleteMissingUsers)
 		} else {
 			err = run(ctx)
 		}

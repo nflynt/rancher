@@ -299,13 +299,11 @@ func UnmigrateAdGUIDUsersOnce(sc *config.ScaledContext) error {
 // UnmigrateAdGUIDUsers will cycle through all users, ctrb, ptrb, tokens and migrate them to an
 // appropriate DN-based PrincipalID.
 func UnmigrateAdGUIDUsers(clientConfig *restclient.Config, dryRun bool, deleteMissingUsers bool) error {
-	if dryRun || os.Getenv("DRY_RUN") == "true" {
-		logrus.Infof("[%v] DRY_RUN is true, no objects will be deleted/modified", migrateAdUserOperation)
-		dryRun = true
+	if dryRun {
+		logrus.Infof("[%v] dryRun is true, no objects will be deleted/modified", migrateAdUserOperation)
 		deleteMissingUsers = false
-	} else if deleteMissingUsers || os.Getenv("AD_DELETE_MISSING_GUID_USERS") == "true" {
-		logrus.Infof("[%v] AD_DELETE_MISSING_GUID_USERS is true, GUID-based users not present in Active Directory will be deleted", migrateAdUserOperation)
-		deleteMissingUsers = true
+	} else if deleteMissingUsers {
+		logrus.Infof("[%v] deleteMissingUsers is true, GUID-based users not present in Active Directory will be deleted", migrateAdUserOperation)
 	}
 
 	sc, adConfig, err := prepareClientContexts(clientConfig)
