@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/rancher/norman/httperror"
+
 	"github.com/mitchellh/mapstructure"
 	"github.com/pkg/errors"
 	"github.com/rancher/norman/types"
@@ -92,7 +94,7 @@ func (p *adProvider) AuthenticateUser(ctx context.Context, input interface{}) (v
 	} else {
 		migrationStatus := migrationConfigMap.Data[StatusMigrationField]
 		if migrationStatus == StatusMigrationRunning {
-			return v3.Principal{}, nil, "Unable to perform login while migration is running", LoginDisabledError{}
+			return v3.Principal{}, nil, "", httperror.WrapAPIError(err, httperror.ClusterUnavailable, StatusLoginDisabled)
 		}
 	}
 
@@ -275,5 +277,5 @@ func (p *adProvider) IsDisabledProvider() (bool, error) {
 
 // IsStatusLoginDisabledError will return true when the login is disabled due to a migration in process.
 func IsStatusLoginDisabledError(err error) bool {
-	return err.Error() == StatusLoginDisabled
+	return errors.Is(err, LoginDisabledError{})
 }
