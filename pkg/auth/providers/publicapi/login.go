@@ -76,9 +76,6 @@ func (h *loginHandler) login(actionName string, action *types.Action, request *t
 		if httperror.IsAPIError(err) {
 			return err
 		}
-		if activedirectory.IsStatusLoginDisabledError(err) {
-			return httperror.WrapAPIError(err, httperror.ClusterUnavailable, activedirectory.StatusLoginDisabled)
-		}
 		return httperror.WrapAPIError(err, httperror.ServerError, "Server error while authenticating")
 	}
 
