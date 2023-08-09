@@ -14,8 +14,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/rancher/rancher/pkg/auth/providers/activedirectory"
-
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 
@@ -23,8 +21,10 @@ import (
 	"github.com/mitchellh/mapstructure"
 	"github.com/pkg/errors"
 	v3 "github.com/rancher/rancher/pkg/apis/management.cattle.io/v3"
+	"github.com/rancher/rancher/pkg/auth/providers/activedirectory"
 	"github.com/rancher/rancher/pkg/auth/providers/common"
 	"github.com/rancher/rancher/pkg/auth/providers/common/ldap"
+	"github.com/rancher/rancher/pkg/auth/tokens"
 	v3client "github.com/rancher/rancher/pkg/client/generated/management/v3"
 	"github.com/rancher/rancher/pkg/types/config"
 	"github.com/sirupsen/logrus"
@@ -677,8 +677,10 @@ func migrateTokens(workunit *migrateUserWorkUnit, sc *config.ScaledContext, dryR
 			if latestToken.Labels == nil {
 				latestToken.Labels = make(map[string]string)
 			}
+			latestToken.Labels[tokens.UserIDLabel] = workunit.originalUser.Name
 			latestToken.Labels[adGUIDMigrationLabel] = migratedLabelValue
 			latestToken.UserPrincipal.Name = dnPrincipalID
+			latestToken.UserID = workunit.originalUser.Name
 			_, err = tokenInterface.Update(latestToken)
 			if err != nil {
 				return fmt.Errorf("[%v] unable to update token: %w", migrateTokensOperation, err)
@@ -705,8 +707,10 @@ func migrateTokens(workunit *migrateUserWorkUnit, sc *config.ScaledContext, dryR
 			if latestToken.Labels == nil {
 				latestToken.Labels = make(map[string]string)
 			}
+			latestToken.Labels[tokens.UserIDLabel] = workunit.originalUser.Name
 			latestToken.Labels[adGUIDMigrationLabel] = migratedLabelValue
 			latestToken.UserPrincipal.Name = localPrincipalID
+			latestToken.UserID = workunit.originalUser.Name
 			_, err = tokenInterface.Update(latestToken)
 			if err != nil {
 				return fmt.Errorf("[%v] unable to update token: %w", migrateTokensOperation, err)
@@ -727,7 +731,7 @@ func collectTokens(workunits *[]migrateUserWorkUnit, sc *config.ScaledContext) e
 	for i, workunit := range *workunits {
 		guidPrincipal := activeDirectoryPrefix + workunit.guid
 		for _, token := range tokenList.Items {
-			if guidPrincipal == token.UserPrincipal.Name {
+			if guidPrincipal == token.UserPrincipal.Name || workunit.originalUser.Name == token.UserID {
 				workunit.guidTokens = append(workunit.guidTokens, token)
 			} else {
 				for _, duplicateLocalUser := range workunit.duplicateUsers {
