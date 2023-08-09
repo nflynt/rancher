@@ -383,22 +383,7 @@ func UnmigrateAdGUIDUsers(clientConfig *restclient.Config, dryRun bool, deleteMi
 			logrus.Errorf("[%v] unable to migrate PRTBs for user '%v': %v", migrateAdUserOperation, userToMigrate.originalUser.Name, err)
 			continue
 		}
-		replaceGUIDPrincipalWithDn(userToMigrate.originalUser, userToMigrate.distinguishedName)
-
-		// In dry run mode (and while debugging) we want to print the before/after state of the user principals
-		if dryRun {
-			logrus.Infof("[%v] User '%v' with GUID '%v' would have new principals:", migrateAdUserOperation,
-				userToMigrate.guid, userToMigrate.originalUser.Name)
-			for _, principalID := range userToMigrate.originalUser.PrincipalIDs {
-				logrus.Infof("[%v]     '%v'", migrateAdUserOperation, principalID)
-			}
-		} else {
-			logrus.Debugf("[%v] User '%v' with GUID %v will have new principals:", migrateAdUserOperation,
-				userToMigrate.guid, userToMigrate.originalUser.Name)
-			for _, principalID := range userToMigrate.originalUser.PrincipalIDs {
-				logrus.Debugf("[%v]     '%v'", migrateAdUserOperation, principalID)
-			}
-		}
+		replaceGUIDPrincipalWithDn(userToMigrate.originalUser, userToMigrate.distinguishedName, userToMigrate.guid, dryRun)
 
 		// ... okay, moment of truth then. Let's save and see what happens!
 		if dryRun {
@@ -576,7 +561,7 @@ func identifyMigrationWorkUnits(users *v3.UserList, lConn *ldapv3.Conn, adConfig
 	return usersToMigrate, missingUsers, skippedUsers
 }
 
-func replaceGUIDPrincipalWithDn(user *v3.User, dn string) {
+func replaceGUIDPrincipalWithDn(user *v3.User, dn string, guid string, dryRun bool) {
 	var principalIDs []string
 	for _, principalID := range user.PrincipalIDs {
 		if !strings.HasPrefix(principalID, activeDirectoryPrefix) {
@@ -585,6 +570,21 @@ func replaceGUIDPrincipalWithDn(user *v3.User, dn string) {
 	}
 	principalIDs = append(principalIDs, activeDirectoryPrefix+dn)
 	user.PrincipalIDs = principalIDs
+
+	// In dry run mode (and while debugging) we want to print the before/after state of the user principals
+	if dryRun {
+		logrus.Infof("[%v] User '%v' with GUID '%v' would have new principals:", migrateAdUserOperation,
+			guid, user.Name)
+		for _, principalID := range user.PrincipalIDs {
+			logrus.Infof("[%v]     '%v'", migrateAdUserOperation, principalID)
+		}
+	} else {
+		logrus.Debugf("[%v] User '%v' with GUID %v will have new principals:", migrateAdUserOperation,
+			guid, user.Name)
+		for _, principalID := range user.PrincipalIDs {
+			logrus.Debugf("[%v]     '%v'", migrateAdUserOperation, principalID)
+		}
+	}
 }
 
 func isAdUser(user *v3.User) bool {
