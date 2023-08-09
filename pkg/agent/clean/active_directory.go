@@ -661,7 +661,10 @@ func migrateTokens(workunit *migrateUserWorkUnit, sc *config.ScaledContext, dryR
 	dnPrincipalID := activeDirectoryPrefix + workunit.distinguishedName
 	for _, userToken := range workunit.guidTokens {
 		if dryRun {
-			logrus.Infof("[%v] DRY RUN: would migrate token '%v' from GUID principal '%v' to DN principal '%v'", migrateTokensOperation, userToken.Name, userToken.UserPrincipal.Name, dnPrincipalID)
+			logrus.Infof("[%v] DRY RUN: would migrate token '%v' from GUID principal '%v' to DN principal '%v'. "+
+				"Additionally, it would add an annotation, %v, indicating the former principalID of this token "+
+				"and a label, %v, to indicate that this token has been migrated",
+				migrateTokensOperation, userToken.Name, userToken.UserPrincipal.Name, dnPrincipalID, adGUIDMigrationAnnotation, adGUIDMigrationLabel)
 		} else {
 			latestToken, err := tokenInterface.Get(userToken.Name, metav1.GetOptions{})
 			if err != nil {
@@ -686,7 +689,10 @@ func migrateTokens(workunit *migrateUserWorkUnit, sc *config.ScaledContext, dryR
 	localPrincipalID := localPrefix + workunit.originalUser.Name
 	for _, userToken := range workunit.duplicateLocalTokens {
 		if dryRun {
-			logrus.Infof("[%v] DRY RUN: would migrate Token '%v' from duplicate local user '%v' to original user '%v'", migrateTokensOperation, userToken.Name, userToken.UserPrincipal.Name, localPrincipalID)
+			logrus.Infof("[%v] DRY RUN: would migrate Token '%v' from duplicate local user '%v' to original user '%v'"+
+				"Additionally, it would add an annotation, %v, indicating the former principalID of this token "+
+				"and a label, %v, to indicate that this token has been migrated",
+				migrateTokensOperation, userToken.Name, userToken.UserPrincipal.Name, localPrincipalID, adGUIDMigrationAnnotation, adGUIDMigrationLabel)
 		} else {
 			latestToken, err := tokenInterface.Get(userToken.Name, metav1.GetOptions{})
 			if err != nil {
@@ -821,7 +827,10 @@ func migrateCRTBs(workunit *migrateUserWorkUnit, sc *config.ScaledContext, dryRu
 	dnPrincipalID := activeDirectoryPrefix + workunit.distinguishedName
 	for _, oldCrtb := range workunit.guidCRTBs {
 		if dryRun {
-			logrus.Infof("[%v] DRY RUN: would migrate CRTB '%v' from GUID principal '%v' to DN principal '%v'", migrateCrtbsOperation, oldCrtb.Name, oldCrtb.UserPrincipalName, dnPrincipalID)
+			logrus.Infof("[%v] DRY RUN: would migrate CRTB '%v' from GUID principal '%v' to DN principal '%v'. "+
+				"Additionally, an annotation, %v, would be added containing the principal being migrated from and"+
+				"labels, %v and %v, that will contain the name of the previous CRTB and indicate that this CRTB has been migrated.",
+				migrateCrtbsOperation, oldCrtb.Name, oldCrtb.UserPrincipalName, dnPrincipalID, adGUIDMigrationAnnotation, migrationPreviousName, adGUIDMigrationLabel)
 		} else {
 			newAnnotations := oldCrtb.Annotations
 			if newAnnotations == nil {
@@ -862,7 +871,10 @@ func migrateCRTBs(workunit *migrateUserWorkUnit, sc *config.ScaledContext, dryRu
 	localPrincipalID := localPrefix + workunit.originalUser.Name
 	for _, oldCrtb := range workunit.duplicateLocalCRTBs {
 		if dryRun {
-			logrus.Infof("[%v] DRY RUN: would migrate CRTB '%v' from duplicate local user '%v' to original user '%v'", migrateCrtbsOperation, oldCrtb.Name, oldCrtb.UserPrincipalName, localPrincipalID)
+			logrus.Infof("[%v] DRY RUN: would migrate CRTB '%v' from duplicate local user '%v' to original user '%v'"+
+				"Additionally, an annotation, %v, would be added containing the principal being migrated from and"+
+				"labels, %v and %v, that will contain the name of the previous CRTB and indicate that this CRTB has been migrated.",
+				migrateCrtbsOperation, oldCrtb.Name, oldCrtb.UserPrincipalName, localPrincipalID, adGUIDMigrationAnnotation, migrationPreviousName, adGUIDMigrationLabel)
 		} else {
 			newAnnotations := oldCrtb.Annotations
 			if newAnnotations == nil {
@@ -907,7 +919,11 @@ func migratePRTBs(workunit *migrateUserWorkUnit, sc *config.ScaledContext, dryRu
 	dnPrincipalID := activeDirectoryPrefix + workunit.distinguishedName
 	for _, oldPrtb := range workunit.guidPRTBs {
 		if dryRun {
-			logrus.Infof("[%v] DRY RUN: would migrate PRTB '%v' from GUID principal '%v' to DN principal '%v'", migratePrtbsOperation, oldPrtb.Name, oldPrtb.UserPrincipalName, dnPrincipalID)
+			logrus.Infof("[%v] DRY RUN: would migrate PRTB '%v' from GUID principal '%v' to DN principal '%v'. "+
+				"Additionally, an annotation, %v, would be added containing the principal being migrated from and"+
+				"labels, %v and %v, that will contain the name of the previous PRTB and indicate that this PRTB has been migrated.",
+				migrateCrtbsOperation, oldPrtb.Name, oldPrtb.UserPrincipalName, dnPrincipalID, adGUIDMigrationAnnotation, migrationPreviousName, adGUIDMigrationLabel)
+
 		} else {
 			newAnnotations := oldPrtb.Annotations
 			if newAnnotations == nil {
@@ -948,7 +964,11 @@ func migratePRTBs(workunit *migrateUserWorkUnit, sc *config.ScaledContext, dryRu
 	localPrincipalID := localPrefix + workunit.originalUser.Name
 	for _, oldPrtb := range workunit.duplicateLocalPRTBs {
 		if dryRun {
-			logrus.Infof("[%v] DRY RUN: would migrate PRTB '%v' from duplicate local user '%v' to original user '%v'", migratePrtbsOperation, oldPrtb.Name, oldPrtb.UserPrincipalName, localPrincipalID)
+			logrus.Infof("[%v] DRY RUN: would migrate PRTB '%v' from duplicate local user '%v' to original user '%v'"+
+				"Additionally, an annotation, %v, would be added containing the principal being migrated from and"+
+				"labels, %v and %v, that will contain the name of the previous PRTB and indicate that this PRTB has been migrated.",
+				migrateCrtbsOperation, oldPrtb.Name, oldPrtb.UserPrincipalName, localPrincipalID, adGUIDMigrationAnnotation, migrationPreviousName, adGUIDMigrationLabel)
+
 		} else {
 			newAnnotations := oldPrtb.Annotations
 			if newAnnotations == nil {
