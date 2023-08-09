@@ -385,38 +385,13 @@ func UnmigrateAdGUIDUsers(clientConfig *restclient.Config, dryRun bool, deleteMi
 		}
 		replaceGUIDPrincipalWithDn(userToMigrate.originalUser, userToMigrate.distinguishedName, userToMigrate.guid, dryRun)
 
-		// ... okay, moment of truth then. Let's save and see what happens!
 		if dryRun {
-			logrus.Infof("DRY RUN: changes to user '%v' have NOT been saved.", userToMigrate.originalUser.Name)
-			if len(userToMigrate.duplicateUsers) > 0 {
-				logrus.Infof("[%v] DRY RUN: duplicate users were identified", migrateAdUserOperation)
-				for _, duplicateUser := range userToMigrate.duplicateUsers {
-					logrus.Infof("[%v] DRY RUN: would DELETE user %v", migrateAdUserOperation, duplicateUser.Name)
-				}
-			}
+			describePlannedChanges(userToMigrate)
 		} else {
-			// First delete all the duplicate users
-			for _, duplicateUser := range userToMigrate.duplicateUsers {
-				err = sc.Management.Users("").Delete(duplicateUser.Name, &metav1.DeleteOptions{})
-				if err != nil {
-					logrus.Errorf("[%v] failed to delete dupliate user '%v' with: %v", migrateAdUserOperation, userToMigrate.originalUser.Name, err)
-					// If the duplicate deletion has failed for some reason, it is NOT safe to save the modified user, as
-					// this may result in a duplicate AD principal ID. Notify and skip.
-					logrus.Errorf("[%v] cannot safely save modifications to user %v, skipping", migrateAdUserOperation, userToMigrate.originalUser.Name)
-					continue
-				}
-				logrus.Infof("[%v] deleted duplicate user %v", migrateAdUserOperation, duplicateUser.Name)
-			}
-			// Having updated all permissions bindings and resolved all potential principal ID conflicts, it is
-			// finally safe to save the modified original user
-
-			userToMigrate.originalUser.Annotations[adGUIDMigrationAnnotation] = userToMigrate.guid
-			userToMigrate.originalUser.Labels[adGUIDMigrationLabel] = migratedLabelValue
-			_, err = sc.Management.Users("").Update(userToMigrate.originalUser)
+			err = deleteDuplicateUsers(userToMigrate, sc)
 			if err != nil {
-				logrus.Errorf("[%v] failed to save modified user '%v' with: %v", migrateAdUserOperation, userToMigrate.originalUser.Name, err)
+				updateModifiedUser(userToMigrate, sc)
 			}
-			logrus.Infof("[%v] user %v was successfully migrated", migrateAdUserOperation, userToMigrate.originalUser.Name)
 		}
 	}
 
@@ -426,6 +401,42 @@ func UnmigrateAdGUIDUsers(clientConfig *restclient.Config, dryRun bool, deleteMi
 	}
 
 	return nil
+}
+
+func describePlannedChanges(workunit migrateUserWorkUnit) {
+	logrus.Infof("DRY RUN: changes to user '%v' have NOT been saved.", workunit.originalUser.Name)
+	if len(workunit.duplicateUsers) > 0 {
+		logrus.Infof("[%v] DRY RUN: duplicate users were identified", migrateAdUserOperation)
+		for _, duplicateUser := range workunit.duplicateUsers {
+			logrus.Infof("[%v] DRY RUN: would DELETE user %v", migrateAdUserOperation, duplicateUser.Name)
+		}
+	}
+}
+
+func deleteDuplicateUsers(workunit migrateUserWorkUnit, sc *config.ScaledContext) error {
+	for _, duplicateUser := range workunit.duplicateUsers {
+		err := sc.Management.Users("").Delete(duplicateUser.Name, &metav1.DeleteOptions{})
+		if err != nil {
+			logrus.Errorf("[%v] failed to delete dupliate user '%v' with: %v", migrateAdUserOperation, workunit.originalUser.Name, err)
+			// If the duplicate deletion has failed for some reason, it is NOT safe to save the modified user, as
+			// this may result in a duplicate AD principal ID. Notify and skip.
+
+			logrus.Errorf("[%v] cannot safely save modifications to user %v, skipping", migrateAdUserOperation, workunit.originalUser.Name)
+			return errors.Errorf("failed to delete duplicate users")
+		}
+		logrus.Infof("[%v] deleted duplicate user %v", migrateAdUserOperation, duplicateUser.Name)
+	}
+	return nil
+}
+
+func updateModifiedUser(workunit migrateUserWorkUnit, sc *config.ScaledContext) {
+	workunit.originalUser.Annotations[adGUIDMigrationAnnotation] = workunit.guid
+	workunit.originalUser.Labels[adGUIDMigrationLabel] = migratedLabelValue
+	_, err := sc.Management.Users("").Update(workunit.originalUser)
+	if err != nil {
+		logrus.Errorf("[%v] failed to save modified user '%v' with: %v", migrateAdUserOperation, workunit.originalUser.Name, err)
+	}
+	logrus.Infof("[%v] user %v was successfully migrated", migrateAdUserOperation, workunit.originalUser.Name)
 }
 
 // identifyMigrationWorkUnits locates ActiveDirectory users with GUID and DN based principal IDs and sorts them
