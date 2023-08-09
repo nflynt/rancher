@@ -215,7 +215,7 @@ func (m *mcm) Start(ctx context.Context) error {
 			return errors.Wrap(err, "failed to telemetry")
 		}
 
-		clean.UnmigrateAdGUIDUsersOnce(m.ScaledContext)
+		go clean.UnmigrateAdGUIDUsersOnce(m.ScaledContext)
 		tokens.StartPurgeDaemon(ctx, management)
 		providerrefresh.StartRefreshDaemon(ctx, m.ScaledContext, management)
 		managementdata.CleanupOrphanedSystemUsers(ctx, management)

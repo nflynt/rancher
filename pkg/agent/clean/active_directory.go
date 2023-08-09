@@ -292,10 +292,11 @@ func prepareClientContexts(clientConfig *restclient.Config) (*config.ScaledConte
 // UnmigrateAdGUIDUsersOnce will ensure that the migration script will run only once.  cycle through all users, ctrb, ptrb, tokens and migrate them to an
 // appropriate DN-based PrincipalID.
 func UnmigrateAdGUIDUsersOnce(sc *config.ScaledContext) error {
-	migrationConfigMap, _ := sc.Core.ConfigMaps("cattle-system").GetNamespaced("cattle-system", "ad-guid-migration", metav1.GetOptions{})
+	migrationConfigMap, _ := sc.Core.ConfigMaps(activedirectory.StatusConfigMapNamespace).GetNamespaced(activedirectory.StatusConfigMapNamespace, activedirectory.StatusConfigMapName, metav1.GetOptions{})
 	if migrationConfigMap != nil {
-		migrationStatus := migrationConfigMap.Data["ad-guid-migration-status"]
-		if migrationStatus == activedirectory.StatusMigrationFinished {
+		migrationStatus := migrationConfigMap.Data[activedirectory.StatusMigrationField]
+		switch migrationStatus {
+		case activedirectory.StatusMigrationFinished:
 			logrus.Debugf("[%v] ad-guid migration has already been completed, refusing to run again at startup", migrateAdUserOperation)
 			return nil
 		}
@@ -316,6 +317,16 @@ func UnmigrateAdGUIDUsers(clientConfig *restclient.Config, dryRun bool, deleteMi
 	sc, adConfig, err := prepareClientContexts(clientConfig)
 	if err != nil {
 		return err
+	}
+
+	migrationConfigMap, _ := sc.Core.ConfigMaps(activedirectory.StatusConfigMapNamespace).GetNamespaced(activedirectory.StatusConfigMapNamespace, activedirectory.StatusConfigMapName, metav1.GetOptions{})
+	if migrationConfigMap != nil {
+		migrationStatus := migrationConfigMap.Data[activedirectory.StatusMigrationField]
+		switch migrationStatus {
+		case activedirectory.StatusMigrationRunning:
+			logrus.Infof("[%v] ad-guid migration is currently running, refusing to run again concurrently", migrateAdUserOperation)
+			return nil
+		}
 	}
 
 	// We'll share this lConn for all lookups to hopefully speed things along
