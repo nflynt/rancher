@@ -737,6 +737,18 @@ func collectTokens(workunits *[]migrateUserWorkUnit, sc *config.ScaledContext) e
 	return nil
 }
 
+func workUnitContainsName(workunit *migrateUserWorkUnit, name string) bool {
+	if workunit.originalUser.Name == name {
+		return true
+	}
+	for _, duplicateLocalUser := range workunit.duplicateUsers {
+		if duplicateLocalUser.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
 func collectCRTBs(workunits *[]migrateUserWorkUnit, sc *config.ScaledContext) error {
 	crtbInterface := sc.Management.ClusterRoleTemplateBindings("")
 	crtbList, err := crtbInterface.List(metav1.ListOptions{})
@@ -745,20 +757,26 @@ func collectCRTBs(workunits *[]migrateUserWorkUnit, sc *config.ScaledContext) er
 		return err
 	}
 
+	// first build a map of guid-principalid -> work unit, which will make the following logic more efficient
+	originalGUIDWorkUnits := map[string]int{}
+	duplicateGUIDWorkUnits := map[string]int{}
 	for i, workunit := range *workunits {
-		guidPrincipal := activeDirectoryPrefix + workunit.guid
-		for _, crtb := range crtbList.Items {
-			if guidPrincipal == crtb.UserPrincipalName {
-				workunit.guidCRTBs = append(workunit.guidCRTBs, crtb)
-			} else {
-				for _, duplicateLocalUser := range workunit.duplicateUsers {
-					if localPrincipalID(duplicateLocalUser) == crtb.UserPrincipalName {
-						workunit.duplicateLocalCRTBs = append(workunit.duplicateLocalCRTBs, crtb)
-					}
-				}
+		originalGUIDWorkUnits[activeDirectoryPrefix+workunit.guid] = i
+		for j := range workunit.duplicateUsers {
+			duplicateGUIDWorkUnits[activeDirectoryPrefix+workunit.guid] = j
+		}
+	}
+
+	for _, crtb := range crtbList.Items {
+		if index, exists := originalGUIDWorkUnits[crtb.UserPrincipalName]; exists {
+			if workUnitContainsName(&(*workunits)[index], crtb.UserName) {
+				(*workunits)[index].guidCRTBs = append((*workunits)[index].guidCRTBs, crtb)
+			}
+		} else if index, exists = duplicateGUIDWorkUnits[crtb.UserPrincipalName]; exists {
+			if workUnitContainsName(&(*workunits)[index], crtb.UserName) {
+				(*workunits)[index].duplicateLocalCRTBs = append((*workunits)[index].duplicateLocalCRTBs, crtb)
 			}
 		}
-		(*workunits)[i] = workunit
 	}
 
 	return nil
@@ -769,22 +787,29 @@ func collectPRTBs(workunits *[]migrateUserWorkUnit, sc *config.ScaledContext) er
 	prtbList, err := prtbInterface.List(metav1.ListOptions{})
 	if err != nil {
 		logrus.Errorf("[%v] unable to fetch PRTB objects: %v", migrateAdUserOperation, err)
+		return err
 	}
 
+	// first build a map of guid-principalid -> work unit, which will make the following logic more efficient
+	originalGUIDWorkUnits := map[string]int{}
+	duplicateGUIDWorkUnits := map[string]int{}
 	for i, workunit := range *workunits {
-		guidPrincipal := activeDirectoryPrefix + workunit.guid
-		for _, prtb := range prtbList.Items {
-			if guidPrincipal == prtb.UserPrincipalName {
-				workunit.guidPRTBs = append(workunit.guidPRTBs, prtb)
-			} else {
-				for _, duplicateLocalUser := range workunit.duplicateUsers {
-					if localPrincipalID(duplicateLocalUser) == prtb.UserPrincipalName {
-						workunit.duplicateLocalPRTBs = append(workunit.duplicateLocalPRTBs, prtb)
-					}
-				}
+		originalGUIDWorkUnits[activeDirectoryPrefix+workunit.guid] = i
+		for j := range workunit.duplicateUsers {
+			duplicateGUIDWorkUnits[activeDirectoryPrefix+workunit.guid] = j
+		}
+	}
+
+	for _, prtb := range prtbList.Items {
+		if index, exists := originalGUIDWorkUnits[prtb.UserPrincipalName]; exists {
+			if workUnitContainsName(&(*workunits)[index], prtb.UserName) {
+				(*workunits)[index].guidPRTBs = append((*workunits)[index].guidPRTBs, prtb)
+			}
+		} else if index, exists = duplicateGUIDWorkUnits[prtb.UserPrincipalName]; exists {
+			if workUnitContainsName(&(*workunits)[index], prtb.UserName) {
+				(*workunits)[index].duplicateLocalPRTBs = append((*workunits)[index].duplicateLocalPRTBs, prtb)
 			}
 		}
-		(*workunits)[i] = workunit
 	}
 
 	return nil
