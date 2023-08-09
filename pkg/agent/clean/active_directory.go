@@ -11,6 +11,7 @@ import (
 	"crypto/x509"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -49,6 +50,8 @@ const (
 	AttributeObjectClass      = "objectClass"
 	AttributeObjectGUID       = "objectGUID"
 )
+
+var validHexPattern = regexp.MustCompile("^[0-9a-f]+$")
 
 type migrateUserWorkUnit struct {
 	distinguishedName    string
@@ -636,16 +639,13 @@ func localPrincipalID(user *v3.User) string {
 	return ""
 }
 
-func isDistinguishedName(principalID string) bool {
-	// Note: this is the logic the original migration script used: DNs have commas
-	// in them, and GUIDs do not. This seems... potentially fragile? Could a DN exist
-	// in the root of the tree (or perhaps be specified relative to a branch?) and thus
-	// be free of commas?
-	return strings.Contains(principalID, ",")
-}
-
 func isGUID(principalID string) bool {
-	return !isDistinguishedName(principalID)
+	parts := strings.Split(principalID, "://")
+	if len(parts) != 2 {
+		logrus.Errorf("[%v] failed to parse invalid PrincipalID: %v", identifyAdUserOperation, principalID)
+		return false
+	}
+	return validHexPattern.MatchString(parts[1])
 }
 
 func getExternalID(principalID string) (string, error) {
