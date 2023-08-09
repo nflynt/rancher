@@ -468,10 +468,11 @@ func identifyMigrationWorkUnits(users *v3.UserList, lConn *ldapv3.Conn, adConfig
 			logrus.Debugf("[%v] '%v' does not appear to be a GUID-based principal ID, taking no action", identifyAdUserOperation, principalID)
 			continue
 		}
-		guid, _, err := getExternalIDAndScope(principalID)
+		guid, err := getExternalID(principalID)
+
 		if err != nil {
 			// This really shouldn't be possible to hit, since isGuid will fail to parse anything that would
-			// cause getExternalIdAndScope to choke on the input, but for maximum safety we'll handle it anyway.
+			// cause getExternalID to choke on the input, but for maximum safety we'll handle it anyway.
 			logrus.Errorf("[%v] failed to extract GUID from principal '%v', cannot process user: '%v'", identifyAdUserOperation, err, user.Name)
 			continue
 		}
@@ -538,7 +539,7 @@ func identifyMigrationWorkUnits(users *v3.UserList, lConn *ldapv3.Conn, adConfig
 			logrus.Debugf("[%v] '%v' does not appear to be a DN-based principal ID, taking no action", identifyAdUserOperation, principalID)
 			continue
 		}
-		dn, _, err := getExternalIDAndScope(principalID)
+		dn, err := getExternalID(principalID)
 		if err != nil {
 			logrus.Errorf("[%v] failed to extract DN from principal '%v', cannot process user: '%v'", identifyAdUserOperation, err, user.Name)
 			continue
@@ -609,14 +610,12 @@ func isGUID(principalID string) bool {
 	return !isDistinguishedName(principalID)
 }
 
-func getExternalIDAndScope(principalID string) (string, string, error) {
-	parts := strings.SplitN(principalID, ":", 2)
+func getExternalID(principalID string) (string, error) {
+	parts := strings.Split(principalID, "://")
 	if len(parts) != 2 {
-		return "", "", errors.Errorf("invalid id %v", principalID)
+		return "", fmt.Errorf("[%v] failed to parse invalid principalID: %v", identifyAdUserOperation, principalID)
 	}
-	scope := parts[0]
-	externalID := strings.TrimPrefix(parts[1], "//")
-	return externalID, scope, nil
+	return parts[1], nil
 }
 
 func migrateTokens(workunit *migrateUserWorkUnit, sc *config.ScaledContext, dryRun bool) error {
