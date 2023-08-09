@@ -771,10 +771,16 @@ func collectCRTBs(workunits *[]migrateUserWorkUnit, sc *config.ScaledContext) er
 		if index, exists := originalGUIDWorkUnits[crtb.UserPrincipalName]; exists {
 			if workUnitContainsName(&(*workunits)[index], crtb.UserName) {
 				(*workunits)[index].guidCRTBs = append((*workunits)[index].guidCRTBs, crtb)
+			} else {
+				logrus.Warnf("[%v] found CRTB for user with guid-based principal '%v' and name '%v', but no user object with that name matches the GUID or its associated DN. refusing to process",
+					identifyAdUserOperation, crtb.UserPrincipalName, crtb.UserName)
 			}
 		} else if index, exists = duplicateGUIDWorkUnits[crtb.UserPrincipalName]; exists {
 			if workUnitContainsName(&(*workunits)[index], crtb.UserName) {
 				(*workunits)[index].duplicateLocalCRTBs = append((*workunits)[index].duplicateLocalCRTBs, crtb)
+			} else {
+				logrus.Warnf("[%v] found CRTB for user with guid-based principal '%v' and name '%v', but no user object with that name matches the GUID or its associated DN. refusing to process",
+					identifyAdUserOperation, crtb.UserPrincipalName, crtb.UserName)
 			}
 		}
 	}
@@ -804,10 +810,16 @@ func collectPRTBs(workunits *[]migrateUserWorkUnit, sc *config.ScaledContext) er
 		if index, exists := originalGUIDWorkUnits[prtb.UserPrincipalName]; exists {
 			if workUnitContainsName(&(*workunits)[index], prtb.UserName) {
 				(*workunits)[index].guidPRTBs = append((*workunits)[index].guidPRTBs, prtb)
+			} else {
+				logrus.Warnf("[%v] found PRTB for user with guid-based principal '%v' and name '%v', but no user object with that name matches the GUID or its associated DN. refusing to process",
+					identifyAdUserOperation, prtb.UserPrincipalName, prtb.UserName)
 			}
 		} else if index, exists = duplicateGUIDWorkUnits[prtb.UserPrincipalName]; exists {
 			if workUnitContainsName(&(*workunits)[index], prtb.UserName) {
 				(*workunits)[index].duplicateLocalPRTBs = append((*workunits)[index].duplicateLocalPRTBs, prtb)
+			} else {
+				logrus.Warnf("[%v] found PRTB for user with guid-based principal '%v' and name '%v', but no user object with that name matches the GUID or its associated DN. refusing to process",
+					identifyAdUserOperation, prtb.UserPrincipalName, prtb.UserName)
 			}
 		}
 	}
