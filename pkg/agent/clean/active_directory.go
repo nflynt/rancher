@@ -27,7 +27,6 @@ import (
 	"github.com/rancher/rancher/pkg/auth/providers/common/ldap"
 	v3client "github.com/rancher/rancher/pkg/client/generated/management/v3"
 	"github.com/rancher/rancher/pkg/types/config"
-	"github.com/rancher/wrangler/pkg/ratelimit"
 	"github.com/sirupsen/logrus"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -268,7 +267,6 @@ func prepareClientContexts(clientConfig *restclient.Config) (*config.ScaledConte
 			return nil, nil, err
 		}
 	}
-	restConfig.RateLimiter = ratelimit.None
 
 	sc, err := scaledContext(restConfig)
 	if err != nil {
