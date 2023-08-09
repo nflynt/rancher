@@ -7,6 +7,7 @@ package clean
 
 import (
 	"bytes"
+	"context"
 	"crypto/x509"
 	"fmt"
 	"os"
@@ -21,7 +22,6 @@ import (
 	ldapv3 "github.com/go-ldap/ldap/v3"
 	"github.com/mitchellh/mapstructure"
 	"github.com/pkg/errors"
-	"github.com/rancher/norman/store/proxy"
 	v3 "github.com/rancher/rancher/pkg/apis/management.cattle.io/v3"
 	"github.com/rancher/rancher/pkg/auth/providers/common"
 	"github.com/rancher/rancher/pkg/auth/providers/common/ldap"
@@ -93,17 +93,13 @@ func scaledContext(restConfig *restclient.Config) (*config.ScaledContext, error)
 		return nil, err
 	}
 
-	sc.UserManager, err = common.NewUserManagerNoBindings(sc)
+	ctx := context.Background()
+	err = sc.Start(ctx)
 	if err != nil {
-		logrus.Errorf("[%v] failed to create sc.UserManager: %v", migrateAdUserOperation, err)
+		logrus.Errorf("[%v] failed to start scaled context: %v", migrateAdUserOperation, err)
 		return nil, err
 	}
 
-	sc.ClientGetter, err = proxy.NewClientGetterFromConfig(*restConfig)
-	if err != nil {
-		logrus.Errorf("[%v] failed to create sc.ClientGetter: %v", migrateAdUserOperation, err)
-		return nil, err
-	}
 	return sc, nil
 }
 
