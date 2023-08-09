@@ -46,6 +46,8 @@ const (
 	adGUIDMigrationAnnotation = "ad-guid-migration-data"
 	migratedLabelValue        = "migrated"
 	migrationPreviousName     = "ad-guid-previous-name"
+	AttributeObjectClass      = "objectClass"
+	AttributeObjectGUID       = "objectGUID"
 )
 
 type migrateUserWorkUnit struct {
@@ -217,7 +219,7 @@ func escapeUUID(s string) string {
 }
 
 func findDistinguishedName(guid string, lConn *ldapv3.Conn, adConfig *v3.ActiveDirectoryConfig) (string, error) {
-	query := fmt.Sprintf("(%v=%v)", "objectGUID", escapeUUID(guid))
+	query := fmt.Sprintf("(&(%v=%v)(%v=%v))", AttributeObjectClass, adConfig.UserObjectClass, AttributeObjectGUID, escapeUUID(guid))
 	search := ldapv3.NewSearchRequest(adConfig.UserSearchBase, ldapv3.ScopeWholeSubtree, ldapv3.NeverDerefAliases,
 		0, 0, false,
 		query, ldap.GetUserSearchAttributes("memberOf", "objectClass", adConfig), nil)
