@@ -2,6 +2,26 @@
 # set -x
 set -e
 
+# Text to display in the banner
+banner_text="This utility will go through all Rancher users and perform an Active Directory lookup using
+the configured service account to get the user's distinguished name.  Next, it will perform lookups inside Rancher
+for all the user's Tokens, ClusterRoleTemplateBindings, and ProjectRoleTemplateBindings.  If any of those objects,
+including the user object itself are referencing a principalID based on the GUID of that user, those objects will be
+updated to reference the distinguished name-based principalID (unless the utility is run with -dry-run, in that case
+the only results are log messages indicating the changes that would be made by a run without that flag).
+
+This utility will also detect and correct the case where a single ActiveDirectory GUID is mapped to multiple Rancher
+users.  That condition was likely caused by a race in the original migration to use GUIDs and resulted in a second
+Rancher user being created.  This caused Rancher logins to fail for the duplicated user.  The utility remedies
+that situation by mapping any tokens and bindings to the original user before removing the newer user, which was
+created in error.
+
+It is also important to note that migration of ClusterRoleTemplateBindings and ProjectRoleTemplateBindings require
+a delete/create operation rather than an update.  This will result in new object names for the migrated bindings.
+A label with the former object name will be included in the migrated bindings.
+
+It is recommended that you perform a Rancher backup prior to running this utility."
+
 CLEAR='\033[0m'
 RED='\033[0;31m'
 
@@ -25,6 +45,25 @@ show_usage() {
 	echo -e "\t-dry-run Display the resources that would will be updated without making changes"
     echo -e "\t-delete-missing Permanently remove user objects whose GUID cannot be found in Active Directory"
 }
+
+# Function to display text in a banner format
+display_banner() {
+    local text="$1"
+    local border_char="="
+    local text_width=$(($(tput cols)))
+    local border=$(printf "%${text_width}s" | tr " " "$border_char")
+
+    echo "$border"
+    printf "%-${text_width}s \n" "$text"
+    echo "$border"
+}
+
+display_banner "${banner_text}"
+read -p "Do you want to continue? (y/n): " choice
+if [[ ! $choice =~ ^[Yy]$ ]]; then
+    echo "Exiting..."
+    exit 0
+fi
 
 if [ $# -lt 1 ]
 then
