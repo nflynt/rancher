@@ -37,11 +37,11 @@ Active Directory is not the authentication provider, this utility will take no a
 ## Usage via Rancher Agent
 
 ```bash
-./ad-guid-unmigration.sh <AGENT IMAGE> [-dry-run] [-delete-missing]
+./ad-guid-unmigration.sh <AGENT IMAGE> [--dry-run] [--delete-missing]
 ```
-*  The Agent image can be found at: docker.io/rancher/rancher-agent:/v2.7.6
-*  The -dry-run flag will run the migration utility, but no changes to Rancher data will take place.  The potential changes will be indicated in the log file.
-*  The -delete-missing flag will delete Rancher users that can not be found by looking them up in Active Directory. If -dry-run is set, that will prevent users from being deleted regardless of this flag.
+*  The Agent image can be found at: docker.io/rancher/rancher-agent:v2.7.6
+*  The --dry-run flag will run the migration utility, but no changes to Rancher data will take place.  The potential changes will be indicated in the log file.
+*  The --delete-missing flag will delete Rancher users that can not be found by looking them up in Active Directory. If --dry-run is set, that will prevent users from being deleted regardless of this flag.
 
 
 ## Additional notes
