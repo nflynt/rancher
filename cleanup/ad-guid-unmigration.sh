@@ -31,7 +31,7 @@ apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: cattle-cleanup-sa
-  namespace: default
+  namespace: cattle-system
   labels:
     rancher-cleanup: "true"
 ---
@@ -39,7 +39,6 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
   name: cattle-cleanup-binding
-  namespace: default
   labels:
     rancher-cleanup: "true"
 roleRef:
@@ -49,13 +48,13 @@ roleRef:
 subjects:
   - kind: ServiceAccount
     name: cattle-cleanup-sa
-    namespace: default
+    namespace: cattle-system
 ---
 apiVersion: batch/v1
 kind: Job
 metadata:
   name: cattle-cleanup-job
-  namespace: default
+  namespace: cattle-system
   labels:
     rancher-cleanup: "true"
 spec:
@@ -92,8 +91,7 @@ spec:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: cattle-cleanup-role
-  namespace: default
+  name: cattle-cleanup-role  
   labels:
     rancher-cleanup: "true"
 rules:
@@ -205,10 +203,10 @@ fi
 echo "$yaml" | kubectl apply -f -
 
 # Get the pod ID to tail the logs
-pod_id=$(kubectl get pod -l job-name=cattle-cleanup-job -o jsonpath="{.items[0].metadata.name}")
+pod_id=$(kubectl --namespace=cattle-system get pod -l job-name=cattle-cleanup-job -o jsonpath="{.items[0].metadata.name}")
 
 declare -i count=0
-until kubectl logs $pod_id -f
+until kubectl --namespace=cattle-system logs $pod_id -f
 do
     if [ $count -gt $timeout ]
     then
