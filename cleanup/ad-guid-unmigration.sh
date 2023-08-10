@@ -136,6 +136,19 @@ display_banner() {
     printf "%-${text_width}s \n" "$text"
     echo "$border"
 }
+# Check the Rancher version before doing anything.
+# If it is v2.7.5, make it clear that configuration is not the recommended way to run this utility.
+rancher_version=$(kubectl get settings server-version --template='{{.value}}')
+if [ "$rancher_version" = "v2.7.5" ]; then
+  echo -e "${RED}IT IS NOT RECOMMENDED TO RUN THIS UTILITY AGAINST RANCHER VERSION v2.7.5${CLEAR}"
+  echo -e "${RED}IF RANCHER v.2.7.5 RESTARTS AFTER RUNNING THIS UTILITY, IT WILL UNDO THE EFFECTS OF THIS UTILITY.${CLEAR}"
+  echo -e "${RED}IF YOU DO WANT TO RUN THIS UTILITY, IT IS RECOMMENDED THAT YOU MAKE A BACKUP PRIOR TO CONTINUING.${CLEAR}"
+  read -p "Do you want to continue? (y/n): " choice
+  if [[ ! $choice =~ ^[Yy]$ ]]; then
+      echo "Exiting..."
+      exit 0
+  fi
+fi
 
 OPTS=$(getopt -o hnd -l help,dry-run,delete-missing -- "$@")
 if [ $? != 0 ]; then
