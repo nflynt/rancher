@@ -49,6 +49,9 @@ const (
 	migrationPreviousName     = "ad-guid-previous-name"
 	AttributeObjectClass      = "objectClass"
 	AttributeObjectGUID       = "objectGUID"
+	migrateStatusSkipped      = "skippedUsers"
+	migrateStatusMissing      = "missingUsers"
+	migrationStatusPercentage = "percentDone"
 )
 
 var validHexPattern = regexp.MustCompile("^[0-9a-f]+$")
@@ -84,14 +87,14 @@ func (e LdapErrorNotFound) Error() string {
 	return "ldap query returned no results"
 }
 
-// LdapFoundDuplicateGuid indicates either a configuration error or
+// LdapFoundDuplicateGUID indicates either a configuration error or
 // a corruption on the Active Directory side. In theory it should never
 // be possible when talking to a real Active Directory server, but just
 // in case we detect and handle it anyway.
-type LdapFoundDuplicateGuid struct{}
+type LdapFoundDuplicateGUID struct{}
 
 // Error provides a string representation of an LdapErrorNotFound
-func (e LdapFoundDuplicateGuid) Error() string {
+func (e LdapFoundDuplicateGUID) Error() string {
 	return "ldap query returned multiple users for the same GUID"
 }
 
@@ -235,7 +238,7 @@ func findDistinguishedName(guid string, lConn *ldapv3.Conn, adConfig *v3.ActiveD
 	if len(result.Entries) < 1 {
 		return "", LdapErrorNotFound{}
 	} else if len(result.Entries) > 1 {
-		return "", LdapFoundDuplicateGuid{}
+		return "", LdapFoundDuplicateGUID{}
 	}
 
 	entry := result.Entries[0]
@@ -249,7 +252,7 @@ func findDistinguishedNameWithRetries(guid string, lConn *ldapv3.Conn, adConfig 
 
 	for retry := 0; retry < maxRetries; retry++ {
 		distinguishedName, err := findDistinguishedName(guid, lConn, adConfig)
-		if err == nil || errors.Is(err, LdapErrorNotFound{}) || errors.Is(err, LdapFoundDuplicateGuid{}) {
+		if err == nil || errors.Is(err, LdapErrorNotFound{}) || errors.Is(err, LdapFoundDuplicateGUID{}) {
 			return distinguishedName, err
 		}
 		logrus.Warnf("[%v] LDAP connection failed: '%v', retrying in %v...", migrateAdUserOperation, err, retryDelay.Seconds())
@@ -365,20 +368,23 @@ func UnmigrateAdGUIDUsers(clientConfig *restclient.Config, dryRun bool, deleteMi
 
 	for _, user := range skippedUsers {
 		logrus.Errorf("[%v] unable to migrate user '%v' due to a connection failure; this user will be skipped", migrateAdUserOperation, user.originalUser.Name)
+		updateUnmigratedUsers(user.originalUser.Name, migrateStatusSkipped, sc)
 	}
 	for _, missingUser := range missingUsers {
 		if deleteMissingUsers && !dryRun {
 			logrus.Infof("[%v] user '%v' with GUID '%v' does not seem to exist in Active Directory. deleteMissingUsers is true, proceeding to delete this user permanently", migrateAdUserOperation, missingUser.originalUser.Name, missingUser.guid)
+			updateUnmigratedUsers(missingUser.originalUser.Name, migrateStatusMissing, sc)
 			err = sc.Management.Users("").Delete(missingUser.originalUser.Name, &metav1.DeleteOptions{})
 			if err != nil {
 				logrus.Errorf("[%v] failed to delete missing user '%v' with: %v", migrateAdUserOperation, missingUser.originalUser.Name, err)
 			}
 		} else {
 			logrus.Errorf("[%v] User '%v' with GUID '%v' does not seem to exist in Active Directory. this user will be skipped", migrateAdUserOperation, missingUser.originalUser.Name, missingUser.guid)
+			updateUnmigratedUsers(missingUser.originalUser.Name, migrateStatusMissing, sc)
 		}
 	}
 
-	for _, userToMigrate := range usersToMigrate {
+	for i, userToMigrate := range usersToMigrate {
 		// If any of the binding replacements fail, then the resulting rancher state for this user is inconsistent
 		//   and we should NOT attempt to modify the user or delete any of its duplicates. This situation is unusual
 		//   and must be investigated by the local admin.
@@ -406,6 +412,12 @@ func UnmigrateAdGUIDUsers(clientConfig *restclient.Config, dryRun bool, deleteMi
 			if err != nil {
 				updateModifiedUser(userToMigrate, sc)
 			}
+		}
+		percentDone := float64(i+1) / float64(len(usersToMigrate)) * 100
+		progress := fmt.Sprintf("%.0f%%", percentDone)
+		err = updateMigrationStatus(sc, migrationStatusPercentage, progress)
+		if err != nil {
+			logrus.Errorf("unable to update migration status: %v", err)
 		}
 	}
 
@@ -528,7 +540,7 @@ func identifyMigrationWorkUnits(users *v3.UserList, lConn *ldapv3.Conn, adConfig
 				logrus.Warnf("[%v] LDAP connection has permanently failed! will continue to migrate previously identified users", identifyAdUserOperation)
 				skippedUsers = append(skippedUsers, skippedUserWorkUnit{guid: guid, originalUser: user.DeepCopy()})
 				ldapPermanentlyFailed = true
-			} else if errors.Is(err, LdapFoundDuplicateGuid{}) {
+			} else if errors.Is(err, LdapFoundDuplicateGUID{}) {
 				logrus.Errorf("[%v] LDAP returned multiple users with GUID '%v'. this should not be possible, and may indicate a configuration error! this user will be skipped", identifyAdUserOperation, guid)
 				skippedUsers = append(skippedUsers, skippedUserWorkUnit{guid: guid, originalUser: user.DeepCopy()})
 			} else if errors.Is(err, LdapErrorNotFound{}) {
@@ -1037,8 +1049,10 @@ func updateMigrationStatus(sc *config.ScaledContext, status string, value string
 			},
 		}
 	}
-
-	cm.Data = map[string]string{status: value}
+	if cm.Data == nil {
+		cm.Data = map[string]string{}
+	}
+	cm.Data[status] = value
 
 	if _, err := sc.Core.ConfigMaps(activedirectory.StatusConfigMapNamespace).Update(cm); err != nil {
 		// If the ConfigMap does not exist, create it
@@ -1051,4 +1065,25 @@ func updateMigrationStatus(sc *config.ScaledContext, status string, value string
 	}
 
 	return nil
+}
+
+// updateUnmigratedUsers will add a user to the list for the specified migration status in the migration status configmap
+func updateUnmigratedUsers(user string, status string, sc *config.ScaledContext) {
+	cm, err := sc.Core.ConfigMaps(activedirectory.StatusConfigMapNamespace).Get(activedirectory.StatusConfigMapName, metav1.GetOptions{})
+	if err != nil {
+		logrus.Errorf("[%v] unable to fetch configmap to update %v users: %v", migrateAdUserOperation, status, err)
+	}
+	currentList := cm.Data[status]
+	if currentList == "" {
+		currentList = currentList + user
+	} else {
+		currentList = currentList + "," + user
+	}
+	cm.Data[status] = currentList
+
+	if _, err := sc.Core.ConfigMaps(activedirectory.StatusConfigMapNamespace).Update(cm); err != nil {
+		if err != nil {
+			logrus.Errorf("[%v] unable to update migration status configmap: %v", migrateAdUserOperation, err)
+		}
+	}
 }
