@@ -10,6 +10,7 @@ import (
 	"context"
 	"crypto/x509"
 	"fmt"
+	"k8s.io/apimachinery/pkg/util/wait"
 	"os"
 	"regexp"
 	"strings"
@@ -247,26 +248,35 @@ func findDistinguishedName(guid string, lConn *ldapv3.Conn, adConfig *v3.ActiveD
 }
 
 func findDistinguishedNameWithRetries(guid string, lConn *ldapv3.Conn, adConfig *v3.ActiveDirectoryConfig) (string, error) {
-	const maxRetries = 5
-	const retryDelay = 10 * time.Second
+	// These settings range from 2 seconds for minor blips to around a full minute for repeated failures
+	backoff := wait.Backoff{
+		Duration: 2 * time.Second,
+		Factor:   1.5, // duration multiplied by this for each retry
+		Jitter:   0.1, // random variance, just in case other parts of rancher are using LDAP while we work
+		Steps:    10,  // number of retries before we consider this failure to be permanent
+	}
 
-	for retry := 0; retry < maxRetries; retry++ {
-		distinguishedName, err := findDistinguishedName(guid, lConn, adConfig)
+	distinguishedName := ""
+	err := wait.ExponentialBackoff(backoff, func() (bool, error) {
+		var err error
+		distinguishedName, err = findDistinguishedName(guid, lConn, adConfig)
 		if err == nil || errors.Is(err, LdapErrorNotFound{}) || errors.Is(err, LdapFoundDuplicateGUID{}) {
-			return distinguishedName, err
+			return true, err
 		}
-		logrus.Warnf("[%v] LDAP connection failed: '%v', retrying in %v...", migrateAdUserOperation, err, retryDelay.Seconds())
-		time.Sleep(retryDelay)
-		// We don't know why the search failed, it might indicate that the connection has gone stale. Let's
-		// try to re-establish it to be safe
+		// any other error type almost certainly indicates a connection failure. Close and re-open the connection
+		// before retrying
+		logrus.Warnf("[%v] LDAP connection failed: '%v', retrying...", migrateAdUserOperation, err)
 		lConn.Close()
 		lConn, err = ldapConnection(adConfig)
 		// If that also fails, we're definitely having a rough time of things.
 		if err != nil {
-			return "", LdapConnectionPermanentlyFailed{}
+			return true, LdapConnectionPermanentlyFailed{}
 		}
-	}
-	return "", LdapConnectionPermanentlyFailed{}
+
+		return false, err
+	})
+
+	return distinguishedName, err
 }
 
 // prepareClientContexts sets up a scaled context with the ability to read users and AD configuration data
