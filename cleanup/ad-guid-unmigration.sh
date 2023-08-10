@@ -25,8 +25,90 @@ It is recommended that you perform a Rancher backup prior to running this utilit
 CLEAR='\033[0m'
 RED='\033[0;31m'
 
-# Location of the yaml to use to deploy the cleanup job
-yaml_url=https://raw.githubusercontent.com/rancher/rancher/master/cleanup/ad-guid-unmigration.yaml
+# cluster resources, including the service account used to run the script
+cluster_resources_yaml=$(cat << 'EOF'
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cattle-cleanup-sa
+  namespace: default
+  labels:
+    rancher-cleanup: "true"
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: cattle-cleanup-binding
+  namespace: default
+  labels:
+    rancher-cleanup: "true"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cattle-cleanup-role
+subjects:
+  - kind: ServiceAccount
+    name: cattle-cleanup-sa
+    namespace: default
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: cattle-cleanup-job
+  namespace: default
+  labels:
+    rancher-cleanup: "true"
+spec:
+  backoffLimit: 6
+  completions: 1
+  parallelism: 1
+  selector:
+  template:
+    metadata:
+      creationTimestamp: null
+    spec:
+      containers:
+        - env:
+            - name: AD_GUID_CLEANUP
+              value: "true"
+            #dryrun - name: DRY_RUN
+              #dryrun value: "true"
+            #deletemissing - name: AD_DELETE_MISSING_GUID_USERS
+              #deletemissing value: "true"
+          image: agent_image
+          imagePullPolicy: Always
+          command: ["agent"]
+          name: cleanup-agent
+          resources: {}
+          terminationMessagePath: /dev/termination-log
+          terminationMessagePolicy: File
+      dnsPolicy: ClusterFirst
+      restartPolicy: OnFailure
+      schedulerName: default-scheduler
+      securityContext: {}
+      serviceAccountName: cattle-cleanup-sa
+      terminationGracePeriodSeconds: 30
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cattle-cleanup-role
+  namespace: default
+  labels:
+    rancher-cleanup: "true"
+rules:
+  - apiGroups:
+      - '*'
+    resources:
+      - '*'
+    verbs:
+      - '*'
+  - nonResourceURLs:
+      - '*'
+    verbs:
+      - '*'
+EOF
+)
 
 # 7200 is equal to one hour as the sleep is half a second
 timeout=7200
@@ -107,11 +189,8 @@ if [[ ! $choice =~ ^[Yy]$ ]]; then
     exit 0
 fi
 
-
-# Pull the yaml and replace the agent_image holder with the passed in image
-# yaml=$(curl --insecure -sfL $yaml_url | sed -e 's=agent_image='"$agent_image"'=')
-# Except it isn't pushed anywhere useful yet, so instead read the local file
-yaml=$(cat ad-guid-unmigration.yaml | sed -e 's=agent_image='"$agent_image"'=')
+# apply the provided rancher agent
+yaml=$(sed -e 's=agent_image='"$agent_image"'=' <<< $cluster_resources_yaml)
 
 if [ "$dry_run" = true ]
 then
