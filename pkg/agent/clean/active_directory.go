@@ -409,7 +409,7 @@ func UnmigrateAdGUIDUsers(clientConfig *restclient.Config, dryRun bool, deleteMi
 			describePlannedChanges(userToMigrate)
 		} else {
 			err = deleteDuplicateUsers(userToMigrate, sc)
-			if err != nil {
+			if err == nil {
 				updateModifiedUser(userToMigrate, sc)
 			}
 		}
