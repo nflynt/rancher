@@ -38,15 +38,14 @@ show_usage() {
   if [ -n "$1" ]; then
     echo -e "${RED}👉 $1${CLEAR}\n";
   fi
-	echo -e "Usage: $0 [AGENT_IMAGE] [FLAGS]"
-	echo "AGENT_IMAGE is a required argument"
-	echo ""
-	echo "Flags:"
-	echo -e "\t-dry-run Display the resources that would will be updated without making changes"
-    echo -e "\t-delete-missing Permanently remove user objects whose GUID cannot be found in Active Directory"
+  echo "Usage: $0 AGENT_IMAGE [OPTIONS]"
+  echo ""
+  echo "Options:"
+  echo -e "\t-h, --help              Display this help message"
+  echo -e "\t-n, --dry-run           Display the resources that would be updated without making changes"
+  echo -e "\t-d, --delete-missing    Permanently remove user objects whose GUID cannot be found in Active Directory"
 }
 
-# Function to display text in a banner format
 display_banner() {
     local text="$1"
     local border_char="="
@@ -58,6 +57,49 @@ display_banner() {
     echo "$border"
 }
 
+OPTS=$(getopt -o hnd -l help,dry-run,delete-missing -- "$@")
+if [ $? != 0 ]; then
+  show_usage "Invalid option"
+  exit 1
+fi
+
+eval set -- "$OPTS"
+
+dry_run=false
+delete_missing=false
+
+while true; do
+  case "$1" in
+    -h | --help)
+      show_usage
+      exit 0
+      ;;
+    -n | --dry-run)
+      dry_run=true
+      shift
+      ;;
+    -d | --delete-missing)
+      delete_missing=true
+      shift
+      ;;
+    --)
+      shift
+      break
+      ;;
+    *)
+      show_usage "Invalid option"
+      exit 1
+      ;;
+  esac
+done
+
+shift "$((OPTIND - 1))"
+# Ensure AGENT_IMAGE is provided
+if [ $# -lt 1 ]; then
+  show_usage "AGENT_IMAGE is a required argument"
+  exit 1
+fi
+
 display_banner "${banner_text}"
 read -p "Do you want to continue? (y/n): " choice
 if [[ ! $choice =~ ^[Yy]$ ]]; then
@@ -65,28 +107,17 @@ if [[ ! $choice =~ ^[Yy]$ ]]; then
     exit 0
 fi
 
-if [ $# -lt 1 ]
-then
-	show_usage "AGENT_IMAGE is a required argument"
-	exit 1
-fi
-
-if [[ $1 == "-h" ||$1 == "--help" ]]
-then
-	show_usage
-	exit 0
-fi
 
 # Pull the yaml and replace the agent_image holder with the passed in image
 # yaml=$(curl --insecure -sfL $yaml_url | sed -e 's=agent_image='"$agent_image"'=')
 # Except it isn't pushed anywhere useful yet, so instead read the local file
 yaml=$(cat ad-guid-unmigration.yaml | sed -e 's=agent_image='"$agent_image"'=')
 
-if [ "$2" = "-dry-run" ]
+if [ "$dry_run" = true ]
 then
     # Uncomment the env var for dry-run mode
     yaml=$(sed -e 's/#dryrun // ' <<< "$yaml")
-elif [ "$2" = "-delete-missing" ]
+elif [ "$delete_missing" = true ]
 then
     # Instead uncomment the env var for missing user cleanup
     yaml=$(sed -e 's/#deletemissing // ' <<< "$yaml")
