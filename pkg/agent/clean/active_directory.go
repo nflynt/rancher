@@ -87,14 +87,14 @@ func (e LdapErrorNotFound) Error() string {
 	return "ldap query returned no results"
 }
 
-// LdapFoundDuplicateGuid indicates either a configuration error or
+// LdapFoundDuplicateGUID indicates either a configuration error or
 // a corruption on the Active Directory side. In theory it should never
 // be possible when talking to a real Active Directory server, but just
 // in case we detect and handle it anyway.
-type LdapFoundDuplicateGuid struct{}
+type LdapFoundDuplicateGUID struct{}
 
 // Error provides a string representation of an LdapErrorNotFound
-func (e LdapFoundDuplicateGuid) Error() string {
+func (e LdapFoundDuplicateGUID) Error() string {
 	return "ldap query returned multiple users for the same GUID"
 }
 
@@ -238,7 +238,7 @@ func findDistinguishedName(guid string, lConn *ldapv3.Conn, adConfig *v3.ActiveD
 	if len(result.Entries) < 1 {
 		return "", LdapErrorNotFound{}
 	} else if len(result.Entries) > 1 {
-		return "", LdapFoundDuplicateGuid{}
+		return "", LdapFoundDuplicateGUID{}
 	}
 
 	entry := result.Entries[0]
@@ -252,7 +252,7 @@ func findDistinguishedNameWithRetries(guid string, lConn *ldapv3.Conn, adConfig 
 
 	for retry := 0; retry < maxRetries; retry++ {
 		distinguishedName, err := findDistinguishedName(guid, lConn, adConfig)
-		if err == nil || errors.Is(err, LdapErrorNotFound{}) || errors.Is(err, LdapFoundDuplicateGuid{}) {
+		if err == nil || errors.Is(err, LdapErrorNotFound{}) || errors.Is(err, LdapFoundDuplicateGUID{}) {
 			return distinguishedName, err
 		}
 		logrus.Warnf("[%v] LDAP connection failed: '%v', retrying in %v...", migrateAdUserOperation, err, retryDelay.Seconds())
@@ -540,7 +540,7 @@ func identifyMigrationWorkUnits(users *v3.UserList, lConn *ldapv3.Conn, adConfig
 				logrus.Warnf("[%v] LDAP connection has permanently failed! will continue to migrate previously identified users", identifyAdUserOperation)
 				skippedUsers = append(skippedUsers, skippedUserWorkUnit{guid: guid, originalUser: user.DeepCopy()})
 				ldapPermanentlyFailed = true
-			} else if errors.Is(err, LdapFoundDuplicateGuid{}) {
+			} else if errors.Is(err, LdapFoundDuplicateGUID{}) {
 				logrus.Errorf("[%v] LDAP returned multiple users with GUID '%v'. this should not be possible, and may indicate a configuration error! this user will be skipped", identifyAdUserOperation, guid)
 				skippedUsers = append(skippedUsers, skippedUserWorkUnit{guid: guid, originalUser: user.DeepCopy()})
 			} else if errors.Is(err, LdapErrorNotFound{}) {
