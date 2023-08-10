@@ -108,9 +108,6 @@ rules:
 EOF
 )
 
-# 7200 is equal to one hour as the sleep is half a second
-timeout=7200
-
 # Agent image to use in the yaml file
 agent_image="$1"
 
@@ -205,12 +202,18 @@ echo "$yaml" | kubectl apply -f -
 # Get the pod ID to tail the logs
 pod_id=$(kubectl --namespace=cattle-system get pod -l job-name=cattle-cleanup-job -o jsonpath="{.items[0].metadata.name}")
 
+# 600 is equal to 5 minutes, because the sleep interval is 0.5 seconds
+job_start_timeout=600
+
 declare -i count=0
 until kubectl --namespace=cattle-system logs $pod_id -f
 do
-    if [ $count -gt $timeout ]
+    if [ $count -gt $job_start_timeout ]
     then
-        echo "Timout reached, check the job by running kubectl get jobs"
+        echo "Timout reached, check the job by running kubectl --namespace=cattle-system get jobs"
+        echo "To cleanup manually, you can run:"
+        echo "  kubectl --namespace=cattle-system delete serviceaccount,job -l rancher-cleanup=true"
+        echo "  kubectl delete clusterrole,clusterrolebinding -l rancher-cleanup=true"
         exit 1
     fi
     sleep 0.5
