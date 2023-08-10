@@ -10,11 +10,12 @@ import (
 	"context"
 	"crypto/x509"
 	"fmt"
-	"k8s.io/apimachinery/pkg/util/wait"
 	"os"
 	"regexp"
 	"strings"
 	"time"
+
+	"k8s.io/apimachinery/pkg/util/wait"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
