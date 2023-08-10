@@ -51,6 +51,7 @@ const (
 	AttributeObjectGUID       = "objectGUID"
 	migrateStatusSkipped      = "skippedUsers"
 	migrateStatusMissing      = "missingUsers"
+	migrationStatusPercentage = "percentDone"
 )
 
 var validHexPattern = regexp.MustCompile("^[0-9a-f]+$")
@@ -383,7 +384,7 @@ func UnmigrateAdGUIDUsers(clientConfig *restclient.Config, dryRun bool, deleteMi
 		}
 	}
 
-	for _, userToMigrate := range usersToMigrate {
+	for i, userToMigrate := range usersToMigrate {
 		// If any of the binding replacements fail, then the resulting rancher state for this user is inconsistent
 		//   and we should NOT attempt to modify the user or delete any of its duplicates. This situation is unusual
 		//   and must be investigated by the local admin.
@@ -411,6 +412,12 @@ func UnmigrateAdGUIDUsers(clientConfig *restclient.Config, dryRun bool, deleteMi
 			if err != nil {
 				updateModifiedUser(userToMigrate, sc)
 			}
+		}
+		percentDone := float64(i+1) / float64(len(usersToMigrate)) * 100
+		progress := fmt.Sprintf("%.0f%%", percentDone)
+		err = updateMigrationStatus(sc, migrationStatusPercentage, progress)
+		if err != nil {
+			logrus.Errorf("unable to update migration status: %v", err)
 		}
 	}
 
