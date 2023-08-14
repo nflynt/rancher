@@ -3,6 +3,7 @@ package ad_unmigration
 import (
 	"bytes"
 	"crypto/x509"
+	"encoding/json"
 	"fmt"
 	"os"
 	"regexp"
@@ -10,25 +11,26 @@ import (
 	"time"
 
 	ldapv3 "github.com/go-ldap/ldap/v3"
-	"github.com/mitchellh/mapstructure"
 	"github.com/pkg/errors"
+	"github.com/sirupsen/logrus"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/wait"
+	restclient "k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
+
 	v3 "github.com/rancher/rancher/pkg/apis/management.cattle.io/v3"
 	"github.com/rancher/rancher/pkg/auth/providers/common"
 	"github.com/rancher/rancher/pkg/auth/providers/common/ldap"
 	v3client "github.com/rancher/rancher/pkg/client/generated/management/v3"
 	"github.com/rancher/rancher/pkg/types/config"
-	"github.com/sirupsen/logrus"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/util/wait"
-	restclient "k8s.io/client-go/rest"
-	"k8s.io/client-go/tools/clientcmd"
 )
 
 // Rancher 2.7.5 serialized binary GUIDs from LDAP using this pattern, so this
 // is what we should match. Notably this differs from Active Directory GUID
 // strings, which have dashes and braces as delimiters.
-var validRancherGuidPattern = regexp.MustCompile("^[0-9a-f]+$")
+var validRancherGUIDPattern = regexp.MustCompile("^[0-9a-f]+$")
 
 type LdapErrorNotFound struct{}
 
@@ -169,7 +171,7 @@ func adConfiguration(sc *config.ScaledContext) (*v3.ActiveDirectoryConfig, error
 	storedADConfigMap := u.UnstructuredContent()
 
 	storedADConfig := &v3.ActiveDirectoryConfig{}
-	err = mapstructure.Decode(storedADConfigMap, storedADConfig)
+	err = common.Decode(storedADConfigMap, storedADConfig)
 	if err != nil {
 		logrus.Debugf("[%v] errors while decoding stored AD config: %v", migrateAdUserOperation, err)
 	}
@@ -180,7 +182,7 @@ func adConfiguration(sc *config.ScaledContext) (*v3.ActiveDirectoryConfig, error
 	}
 
 	typemeta := &metav1.ObjectMeta{}
-	err = mapstructure.Decode(metadataMap, typemeta)
+	err = common.Decode(metadataMap, typemeta)
 	if err != nil {
 		logrus.Debugf("[%v] errors while decoding typemeta: %v", migrateAdUserOperation, err)
 	}
@@ -243,5 +245,44 @@ func isGUID(principalID string) bool {
 		logrus.Errorf("[%v] failed to parse invalid PrincipalID: %v", identifyAdUserOperation, principalID)
 		return false
 	}
-	return validRancherGuidPattern.MatchString(parts[1])
+	return validRancherGUIDPattern.MatchString(parts[1])
+}
+
+func updateADConfigMigrationStatus(status map[string]string, sc *config.ScaledContext) error {
+	authConfigObj, err := sc.Management.AuthConfigs("").ObjectClient().UnstructuredClient().Get("activedirectory", metav1.GetOptions{})
+	if err != nil {
+		logrus.Errorf("[%v] failed to obtain activedirecotry authConfigObj: %v", migrateAdUserOperation, err)
+		return err
+	}
+
+	authConfigJSON, err := json.Marshal(authConfigObj)
+	if err != nil {
+		return fmt.Errorf("failed to marshal authConfig object to JSON: %v", err)
+	}
+
+	// Create an empty unstructured object to hold the decoded JSON
+	storedADConfig := &unstructured.Unstructured{}
+
+	// Decode the JSON string into the unstructured object because mapstructure is dropping the metadata
+	if err := json.Unmarshal(authConfigJSON, storedADConfig); err != nil {
+		return fmt.Errorf("failed to unmarshal JSON into storedADConfig: %v", err)
+	}
+
+	// Update annotations with migration status
+	annotations := storedADConfig.GetAnnotations()
+	if annotations == nil {
+		annotations = make(map[string]string)
+	}
+	for annotation, value := range status {
+		annotations[adGUIDMigrationPrefix+annotation] = value
+	}
+	storedADConfig.SetAnnotations(annotations)
+
+	// Update the AuthConfig object using the unstructured client
+	_, err = sc.Management.AuthConfigs("").ObjectClient().UnstructuredClient().Update(storedADConfig.GetName(), storedADConfig)
+	if err != nil {
+		return fmt.Errorf("failed to update authConfig object: %v", err)
+	}
+
+	return nil
 }
