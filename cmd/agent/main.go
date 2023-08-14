@@ -25,6 +25,7 @@ import (
 	"github.com/hashicorp/go-multierror"
 	"github.com/mattn/go-colorable"
 	"github.com/rancher/rancher/pkg/agent/clean"
+	"github.com/rancher/rancher/pkg/agent/clean/ad_unmigration"
 	"github.com/rancher/rancher/pkg/agent/cluster"
 	"github.com/rancher/rancher/pkg/agent/node"
 	"github.com/rancher/rancher/pkg/agent/rancher"
@@ -83,7 +84,7 @@ func main() {
 		} else if os.Getenv("AD_GUID_CLEANUP") == "true" {
 			dryrun := os.Getenv("DRY_RUN") == "true"
 			deleteMissingUsers := os.Getenv("AD_DELETE_MISSING_GUID_USERS") == "true"
-			err = clean.UnmigrateAdGUIDUsers(nil, dryrun, deleteMissingUsers)
+			err = ad_unmigration.UnmigrateAdGUIDUsers(nil, dryrun, deleteMissingUsers)
 		} else {
 			err = run(ctx)
 		}

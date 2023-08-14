@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/rancher/rancher/pkg/agent/clean"
+	"github.com/rancher/rancher/pkg/agent/clean/ad_unmigration"
 
 	"github.com/pkg/errors"
 	"github.com/rancher/norman/types"
@@ -215,7 +215,7 @@ func (m *mcm) Start(ctx context.Context) error {
 			return errors.Wrap(err, "failed to telemetry")
 		}
 
-		go clean.UnmigrateAdGUIDUsersOnce(m.ScaledContext)
+		go ad_unmigration.UnmigrateAdGUIDUsersOnce(m.ScaledContext)
 		tokens.StartPurgeDaemon(ctx, management)
 		providerrefresh.StartRefreshDaemon(ctx, m.ScaledContext, management)
 		managementdata.CleanupOrphanedSystemUsers(ctx, management)
