@@ -45,7 +45,7 @@ Active Directory is not the authentication provider, this utility will take no a
 
 
 ## Additional notes
-*  The utility will create a configmap named ad-guid-migration in the cattle-system namespace.  This configmap contains
+*  The utility will create a configmap named `ad-guid-migration` in the `cattle-system` namespace.  This configmap contains
    a data entry with a key named "ad-guid-migration-status".  If the utility is currently active, that status will be
    set to "Running".  After the utility has completed, the status will be set to "Finished".  If a run is interrupted
    prior to completion, that configmap will retain the status of "Running" and subsequent attempts to run the script will
