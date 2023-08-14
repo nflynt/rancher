@@ -177,6 +177,8 @@ if [ $# -lt 1 ]; then
   exit 1
 fi
 
+display_banner "${banner_text}"
+
 if [ "$dry_run" != true ]
 then
     # Check the Rancher version before doing anything.
@@ -194,7 +196,6 @@ then
     fi
 fi
 
-display_banner "${banner_text}"
 read -p "Do you want to continue? (y/n): " choice
 if [[ ! $choice =~ ^[Yy]$ ]]; then
     echo "Exiting..."
