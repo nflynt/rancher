@@ -157,11 +157,13 @@ func UnmigrateAdGUIDUsers(clientConfig *restclient.Config, dryRun bool, deleteMi
 	defer lConn.Close()
 
 	// set the status to running and reset the unmigrated fields
-	err = updateMigrationStatus(sc, activedirectory.StatusMigrationField, activedirectory.StatusMigrationRunning)
-	updateUnmigratedUsers("", migrateStatusSkipped, true, sc)
-	updateUnmigratedUsers("", migrateStatusMissing, true, sc)
-	if err != nil {
-		return fmt.Errorf("unable to update migration status configmap: %v", err)
+	if !dryRun {
+		err = updateMigrationStatus(sc, activedirectory.StatusMigrationField, activedirectory.StatusMigrationRunning)
+		updateUnmigratedUsers("", migrateStatusSkipped, true, sc)
+		updateUnmigratedUsers("", migrateStatusMissing, true, sc)
+		if err != nil {
+			return fmt.Errorf("unable to update migration status configmap: %v", err)
+		}
 	}
 
 	users, err := sc.Management.Users("").List(metav1.ListOptions{})
@@ -193,7 +195,9 @@ func UnmigrateAdGUIDUsers(clientConfig *restclient.Config, dryRun bool, deleteMi
 
 	for _, user := range skippedUsers {
 		logrus.Errorf("[%v] unable to migrate user '%v' due to a connection failure; this user will be skipped", migrateAdUserOperation, user.originalUser.Name)
-		updateUnmigratedUsers(user.originalUser.Name, migrateStatusSkipped, false, sc)
+		if !dryRun {
+			updateUnmigratedUsers(user.originalUser.Name, migrateStatusSkipped, false, sc)
+		}
 	}
 	for _, missingUser := range missingUsers {
 		if deleteMissingUsers && !dryRun {
@@ -205,7 +209,9 @@ func UnmigrateAdGUIDUsers(clientConfig *restclient.Config, dryRun bool, deleteMi
 			}
 		} else {
 			logrus.Errorf("[%v] User '%v' with GUID '%v' does not seem to exist in Active Directory. this user will be skipped", migrateAdUserOperation, missingUser.originalUser.Name, missingUser.guid)
-			updateUnmigratedUsers(missingUser.originalUser.Name, migrateStatusMissing, false, sc)
+			if !dryRun {
+				updateUnmigratedUsers(missingUser.originalUser.Name, migrateStatusMissing, false, sc)
+			}
 		}
 	}
 
@@ -242,28 +248,30 @@ func UnmigrateAdGUIDUsers(clientConfig *restclient.Config, dryRun bool, deleteMi
 			if err == nil {
 				updateModifiedUser(userToMigrate, sc)
 			}
-		}
-		percentDone := float64(i+1) / float64(len(usersToMigrate)) * 100
-		progress := fmt.Sprintf("%.0f%%", percentDone)
-		err = updateMigrationStatus(sc, migrationStatusPercentage, progress)
-		if err != nil {
-			logrus.Errorf("unable to update migration status: %v", err)
+			percentDone := float64(i+1) / float64(len(usersToMigrate)) * 100
+			progress := fmt.Sprintf("%.0f%%", percentDone)
+			err = updateMigrationStatus(sc, migrationStatusPercentage, progress)
+			if err != nil {
+				logrus.Errorf("unable to update migration status: %v", err)
+			}
 		}
 	}
 
-	// If we have skipped users, that status will be reported as the overall status
-	// since that state is potentially resolvable by re-running the utility
-	var status string
-	if len(skippedUsers) > 0 {
-		status = activedirectory.StatusMigrationFinishedWithSkipped
-	} else if len(missingUsers) > 0 {
-		status = activedirectory.StatusMigrationFinishedWithMissing
-	} else {
-		status = activedirectory.StatusMigrationFinished
-	}
-	err = updateMigrationStatus(sc, activedirectory.StatusMigrationField, status)
-	if err != nil {
-		return fmt.Errorf("unable to update migration status configmap: %v", err)
+	if !dryRun {
+		// If we have skipped users, that status will be reported as the overall status
+		// since that state is potentially resolvable by re-running the utility
+		var status string
+		if len(skippedUsers) > 0 {
+			status = activedirectory.StatusMigrationFinishedWithSkipped
+		} else if len(missingUsers) > 0 {
+			status = activedirectory.StatusMigrationFinishedWithMissing
+		} else {
+			status = activedirectory.StatusMigrationFinished
+		}
+		err = updateMigrationStatus(sc, activedirectory.StatusMigrationField, status)
+		if err != nil {
+			return fmt.Errorf("unable to update migration status configmap: %v", err)
+		}
 	}
 
 	return nil
