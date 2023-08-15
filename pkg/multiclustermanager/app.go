@@ -7,10 +7,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/rancher/rancher/pkg/agent/clean/ad_unmigration"
+	"github.com/rancher/rancher/pkg/agent/clean/adunmigration"
 
 	"github.com/pkg/errors"
 	"github.com/rancher/norman/types"
+	"github.com/sirupsen/logrus"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
 	"github.com/rancher/rancher/pkg/auth/providerrefresh"
 	"github.com/rancher/rancher/pkg/auth/providers/common"
 	"github.com/rancher/rancher/pkg/auth/tokens"
@@ -30,8 +33,6 @@ import (
 	"github.com/rancher/rancher/pkg/tunnelserver/mcmauthorizer"
 	"github.com/rancher/rancher/pkg/types/config"
 	"github.com/rancher/rancher/pkg/wrangler"
-	"github.com/sirupsen/logrus"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 type Options struct {
@@ -215,7 +216,7 @@ func (m *mcm) Start(ctx context.Context) error {
 			return errors.Wrap(err, "failed to telemetry")
 		}
 
-		go ad_unmigration.UnmigrateAdGUIDUsersOnce(m.ScaledContext)
+		go adunmigration.UnmigrateAdGUIDUsersOnce(m.ScaledContext)
 		tokens.StartPurgeDaemon(ctx, management)
 		providerrefresh.StartRefreshDaemon(ctx, m.ScaledContext, management)
 		managementdata.CleanupOrphanedSystemUsers(ctx, management)

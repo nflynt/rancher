@@ -1,12 +1,13 @@
-package ad_unmigration
+package adunmigration
 
 import (
 	"fmt"
 
-	"github.com/rancher/rancher/pkg/auth/tokens"
-	"github.com/rancher/rancher/pkg/types/config"
 	"github.com/sirupsen/logrus"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	"github.com/rancher/rancher/pkg/auth/tokens"
+	"github.com/rancher/rancher/pkg/types/config"
 )
 
 func collectTokens(workunits *[]migrateUserWorkUnit, sc *config.ScaledContext) error {

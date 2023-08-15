@@ -1,14 +1,15 @@
-package ad_unmigration
+package adunmigration
 
 import (
 	"fmt"
 	"strings"
 
 	"github.com/pkg/errors"
-	v3 "github.com/rancher/rancher/pkg/apis/management.cattle.io/v3"
-	"github.com/rancher/rancher/pkg/types/config"
 	"github.com/sirupsen/logrus"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	v3 "github.com/rancher/rancher/pkg/apis/management.cattle.io/v3"
+	"github.com/rancher/rancher/pkg/types/config"
 )
 
 func describePlannedChanges(workunit migrateUserWorkUnit) {

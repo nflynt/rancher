@@ -1,12 +1,13 @@
-package ad_unmigration
+package adunmigration
 
 import (
 	"fmt"
 
-	v3 "github.com/rancher/rancher/pkg/apis/management.cattle.io/v3"
-	"github.com/rancher/rancher/pkg/types/config"
 	"github.com/sirupsen/logrus"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	v3 "github.com/rancher/rancher/pkg/apis/management.cattle.io/v3"
+	"github.com/rancher/rancher/pkg/types/config"
 )
 
 // principalsToMigrate collects workunits whose resources we wish to migrate into two groups:

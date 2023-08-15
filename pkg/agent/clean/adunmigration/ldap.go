@@ -1,4 +1,4 @@
-package ad_unmigration
+package adunmigration
 
 import (
 	"bytes"
@@ -295,7 +295,6 @@ func migrateAllowedUserPrincipals(workunits *[]migrateUserWorkUnit, sc *config.S
 	}
 
 	// Create an empty unstructured object to hold the decoded JSON
-	storedADConfig := &unstructured.Unstructured{}
 	storedADConfig, ok := authConfigObj.(*unstructured.Unstructured)
 	if !ok {
 		return fmt.Errorf("[%v] expected unstructured authconfig, got %T", migrateAdUserOperation, authConfigObj)
@@ -313,17 +312,17 @@ func migrateAllowedUserPrincipals(workunits *[]migrateUserWorkUnit, sc *config.S
 	}
 
 	for i, item := range listOfMaybeStrings {
-		principalId, ok := item.(string)
+		principalID, ok := item.(string)
 		if !ok {
 			return fmt.Errorf("[%v] expected string for allowed principal id, found instead %T", migrateAdUserOperation, item)
 		}
-		if j, exists := adWorkUnitsByPrincipal[principalId]; exists {
-			newPrincipalId := activeDirectoryPrefix + (*workunits)[j].distinguishedName
+		if j, exists := adWorkUnitsByPrincipal[principalID]; exists {
+			newPrincipalID := activeDirectoryPrefix + (*workunits)[j].distinguishedName
 			if dryRun {
 				logrus.Infof("[%v] DRY RUN: would migrate allowed user %v to %v", migrateAdUserOperation,
-					principalId, newPrincipalId)
+					principalID, newPrincipalID)
 			} else {
-				listOfMaybeStrings[i] = newPrincipalId
+				listOfMaybeStrings[i] = newPrincipalID
 			}
 		}
 	}
