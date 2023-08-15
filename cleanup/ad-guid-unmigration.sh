@@ -20,6 +20,8 @@ It is also important to note that migration of ClusterRoleTemplateBindings and P
 a delete/create operation rather than an update.  This will result in new object names for the migrated bindings.
 A label with the former object name will be included in the migrated bindings.
 
+The Rancher Agent image to be used with this utility can be found at rancher/rancher-agent:v2.7.6
+
 It is recommended that you perform a Rancher backup prior to running this utility."
 
 CLEAR='\033[0m'
