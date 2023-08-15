@@ -96,7 +96,7 @@ func scaledContext(restConfig *restclient.Config) (*config.ScaledContext, error)
 // appropriate DN-based PrincipalID.
 func UnmigrateAdGUIDUsersOnce(sc *config.ScaledContext) error {
 	migrationConfigMap, err := sc.Core.ConfigMaps(activedirectory.StatusConfigMapNamespace).GetNamespaced(activedirectory.StatusConfigMapNamespace, activedirectory.StatusConfigMapName, metav1.GetOptions{})
-	if err != nil {
+	if err != nil && !apierrors.IsNotFound(err) {
 		logrus.Errorf("[%v] unable to check unmigration configmap: %v", migrateAdUserOperation, err)
 		logrus.Errorf("[%v] cannot determine if it is safe to proceed. refusing to run", migrateAdUserOperation)
 		return nil
@@ -135,7 +135,7 @@ func UnmigrateAdGUIDUsers(clientConfig *restclient.Config, dryRun bool, deleteMi
 	}
 
 	migrationConfigMap, err := sc.Core.ConfigMaps(activedirectory.StatusConfigMapNamespace).GetNamespaced(activedirectory.StatusConfigMapNamespace, activedirectory.StatusConfigMapName, metav1.GetOptions{})
-	if err != nil {
+	if err != nil && !apierrors.IsNotFound(err) {
 		logrus.Errorf("[%v] unable to check unmigration configmap: %v", migrateAdUserOperation, err)
 		logrus.Errorf("[%v] cannot determine if it is safe to proceed. refusing to run", migrateAdUserOperation)
 		return nil
