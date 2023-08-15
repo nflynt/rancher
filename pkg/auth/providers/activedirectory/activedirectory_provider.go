@@ -45,7 +45,7 @@ var scopes = []string{UserScope, GroupScope}
 type adProvider struct {
 	ctx         context.Context
 	authConfigs v3.AuthConfigInterface
-	configMaps  corev1.ConfigMapInterface
+	configMaps  corev1.ConfigMapLister
 	secrets     corev1.SecretInterface
 	userMGR     user.Manager
 	certs       string
@@ -57,7 +57,7 @@ func Configure(ctx context.Context, mgmtCtx *config.ScaledContext, userMGR user.
 	return &adProvider{
 		ctx:         ctx,
 		authConfigs: mgmtCtx.Management.AuthConfigs(""),
-		configMaps:  mgmtCtx.Core.ConfigMaps(""),
+		configMaps:  mgmtCtx.Core.ConfigMaps("").Controller().Lister(),
 		secrets:     mgmtCtx.Core.Secrets(""),
 		userMGR:     userMGR,
 		tokenMGR:    tokenMGR,
@@ -89,7 +89,7 @@ func (p *adProvider) AuthenticateUser(ctx context.Context, input interface{}) (v
 		return v3.Principal{}, nil, "", errors.New("unexpected input type")
 	}
 
-	migrationConfigMap, err := p.configMaps.GetNamespaced(StatusConfigMapNamespace, StatusConfigMapName, metav1.GetOptions{})
+	migrationConfigMap, err := p.configMaps.Get(StatusConfigMapNamespace, StatusConfigMapName)
 	if err != nil {
 		logrus.Infof("ad-guid-migration configmap does not exist, allowing logins by default: %v", err)
 	} else {
