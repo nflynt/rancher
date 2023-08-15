@@ -134,6 +134,14 @@ display_banner() {
     echo "$border"
     printf "%-${text_width}s \n" "$text"
     echo "$border"
+    echo "Dry run: $dry_run"
+    echo "Delete missing: $delete_missing"
+    echo "Agent image: $agent_image"
+    if [[ "$dry_run" = true ]] && [[ "$delete_missing" = true ]]
+    then
+        echo "Setting the dry-run option to true overrides the delete-missing option.  NO CHANGES WILL BE MADE."
+    fi
+    echo "$border"
 }
 
 OPTS=$(getopt -o hnd -l help,dry-run,delete-missing -- "$@")
@@ -197,6 +205,7 @@ then
       fi
     fi
 fi
+
 
 read -p "Do you want to continue? (y/n): " choice
 if [[ ! $choice =~ ^[Yy]$ ]]; then
