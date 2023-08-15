@@ -6,9 +6,15 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/rancher/norman/httperror"
+
 	"github.com/mitchellh/mapstructure"
 	"github.com/pkg/errors"
 	"github.com/rancher/norman/types"
+	"github.com/sirupsen/logrus"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+
 	v32 "github.com/rancher/rancher/pkg/apis/management.cattle.io/v3"
 	"github.com/rancher/rancher/pkg/auth/providers/common"
 	"github.com/rancher/rancher/pkg/auth/tokens"
@@ -18,17 +24,23 @@ import (
 	v3 "github.com/rancher/rancher/pkg/generated/norman/management.cattle.io/v3"
 	"github.com/rancher/rancher/pkg/types/config"
 	"github.com/rancher/rancher/pkg/user"
-	"github.com/sirupsen/logrus"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 )
 
 const (
-	Name              = "activedirectory"
-	UserScope         = Name + "_user"
-	GroupScope        = Name + "_group"
-	ObjectClass       = "objectClass"
-	MemberOfAttribute = "memberOf"
+	Name                               = "activedirectory"
+	UserScope                          = Name + "_user"
+	GroupScope                         = Name + "_group"
+	ObjectClass                        = "objectClass"
+	MemberOfAttribute                  = "memberOf"
+	StatusConfigMapName                = "ad-guid-migration"
+	StatusConfigMapNamespace           = "cattle-system"
+	StatusMigrationField               = "ad-guid-migration-status"
+	StatusMigrationFinished            = "Finished"
+	StatusMigrationRunning             = "Running"
+	StatusMigrationFinishedWithSkipped = "FinishedWithSkipped"
+	StatusMigrationFinishedWithMissing = "FinishedWithMissing"
+	StatusMigrationFailed              = "Failed"
+	StatusLoginDisabled                = "login is disabled while migration is running"
 )
 
 var scopes = []string{UserScope, GroupScope}
@@ -36,6 +48,7 @@ var scopes = []string{UserScope, GroupScope}
 type adProvider struct {
 	ctx         context.Context
 	authConfigs v3.AuthConfigInterface
+	configMaps  corev1.ConfigMapLister
 	secrets     corev1.SecretInterface
 	userMGR     user.Manager
 	certs       string
@@ -47,6 +60,7 @@ func Configure(ctx context.Context, mgmtCtx *config.ScaledContext, userMGR user.
 	return &adProvider{
 		ctx:         ctx,
 		authConfigs: mgmtCtx.Management.AuthConfigs(""),
+		configMaps:  mgmtCtx.Core.ConfigMaps("").Controller().Lister(),
 		secrets:     mgmtCtx.Core.Secrets(""),
 		userMGR:     userMGR,
 		tokenMGR:    tokenMGR,
@@ -76,6 +90,16 @@ func (p *adProvider) AuthenticateUser(ctx context.Context, input interface{}) (v
 	login, ok := input.(*v32.BasicLogin)
 	if !ok {
 		return v3.Principal{}, nil, "", errors.New("unexpected input type")
+	}
+
+	migrationConfigMap, err := p.configMaps.Get(StatusConfigMapNamespace, StatusConfigMapName)
+	if err != nil {
+		logrus.Infof("ad-guid-migration configmap does not exist, allowing logins by default: %v", err)
+	} else {
+		migrationStatus := migrationConfigMap.Data[StatusMigrationField]
+		if migrationStatus == StatusMigrationRunning {
+			return v3.Principal{}, nil, "", httperror.WrapAPIError(err, httperror.ClusterUnavailable, StatusLoginDisabled)
+		}
 	}
 
 	config, caPool, err := p.getActiveDirectoryConfig()
@@ -237,6 +261,13 @@ func (p *adProvider) GetUserExtraAttributes(userPrincipal v3.Principal) map[stri
 		extras[common.UserAttributeUserName] = []string{userPrincipal.LoginName}
 	}
 	return extras
+}
+
+type LoginDisabledError struct{}
+
+// Error provides a string representation of an LdapErrorNotFound
+func (e LoginDisabledError) Error() string {
+	return StatusLoginDisabled
 }
 
 // IsDisabledProvider checks if the Azure Active Directory provider is currently disabled in Rancher.
