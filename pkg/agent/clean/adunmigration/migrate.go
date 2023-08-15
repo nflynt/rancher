@@ -166,6 +166,13 @@ func UnmigrateAdGUIDUsers(clientConfig *restclient.Config, dryRun bool, deleteMi
 				logrus.Errorf("[%v] unable to update migration status configmap: %v", migrateAdUserOperation, err)
 			}
 		}(sc, activedirectory.StatusMigrationField)
+
+		// Early bail: if the AD configuration is disabled, then we're done! Update the configmap right now and exit.
+		if !adConfig.Enabled {
+			logrus.Infof("[%v] during unmigration, found that Active Directory is not enabled. nothing to do", migrateAdUserOperation)
+			finalStatus = activedirectory.StatusMigrationFinished
+			return nil
+		}
 	}
 
 	users, err := sc.Management.Users("").List(metav1.ListOptions{})
