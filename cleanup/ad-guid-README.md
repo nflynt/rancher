@@ -2,6 +2,13 @@
 
 **It is recommended to take a snapshot of Rancher before performing this in the event that a restore is required.**
 
+
+## Critical Notes
+* This script will delete and recreate CRTBs/PRTBs/GRBs, which may cause issues with tools (like terraform) which maintain external state.  The original object names are stored in an annotation on the new objects.
+* It is recommended to use this script on Rancher v2.7.6 - running this on v2.7.5 may produce performance issues
+* This script requires that the Active Directory service account has permissions to read all users known to Rancher.
+
+
 ## Purpose
 
 In order to reverse the effects of migrating Active Directory principalIDs to be based on GUID rather than DN this
@@ -16,7 +23,7 @@ This utility will:
 
 This utility will go through all Rancher users and perform an Active Directory lookup using the configured service account to
 get the user's distinguished name.  Next, it will perform lookups inside Rancher for all the user's Tokens,
-ClusterRoleTemplateBindings, and ProjectRoleTemplateBindings.  If any of those objects, including the user object
+ClusterRoleTemplateBindings, ProjectRoleTemplateBindings, and GlobalRoleBindings.  If any of those objects, including the user object
 itself are referencing a principalID based on the GUID of that user, those objects will be updated to reference
 the distinguished name-based principalID (unless the utility is run with -dry-run, in that case the only results
 are log messages indicating the changes that would be made by a run without that flag).
@@ -52,7 +59,7 @@ Active Directory is not the authentication provider, this utility will take no a
    immediately exit.  In order to allow it to run again, you can either edit the configmap to remove that key or you can
    delete the configmap entirely.
 
-*  When migrating ClusterRoleTemplateBindings and ProjectRoleTemplateBindings, it is necessary to perform the action
+*  When migrating ClusterRoleTemplateBindings, ProjectRoleTemplateBindings, and GlobalRoleBindings it is necessary to perform the action
    as a delete/create rather than an update.  **This may cause issues if you use tooling that relies on the names of the objects**.
    When a ClusterRoleTemplateBinding or a ProjectRoleTemplateBinding is migrated to a new name, the newly created object
    will contain a label, "ad-guid-previous-name", that will have a value of the name of the object that was deleted.

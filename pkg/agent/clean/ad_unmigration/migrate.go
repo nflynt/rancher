@@ -8,18 +8,20 @@ package ad_unmigration
 import (
 	"context"
 	"fmt"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 
 	ldapv3 "github.com/go-ldap/ldap/v3"
 	"github.com/pkg/errors"
-	v3 "github.com/rancher/rancher/pkg/apis/management.cattle.io/v3"
-	"github.com/rancher/rancher/pkg/auth/providers/activedirectory"
-	"github.com/rancher/rancher/pkg/types/config"
 	"github.com/sirupsen/logrus"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	restclient "k8s.io/client-go/rest"
+
+	v3 "github.com/rancher/rancher/pkg/apis/management.cattle.io/v3"
+	"github.com/rancher/rancher/pkg/auth/providers/activedirectory"
+	"github.com/rancher/rancher/pkg/types/config"
 )
 
 const (
@@ -33,6 +35,7 @@ const (
 	localPrefix               = "local://"
 	adGUIDMigrationLabel      = "ad-guid-migration"
 	adGUIDMigrationAnnotation = "ad-guid-migration-data"
+	adGUIDMigrationPrefix     = "migration-"
 	migratedLabelValue        = "migrated"
 	migrationPreviousName     = "ad-guid-previous-name"
 	AttributeObjectClass      = "objectClass"
@@ -40,6 +43,7 @@ const (
 	migrateStatusSkipped      = "skippedUsers"
 	migrateStatusMissing      = "missingUsers"
 	migrationStatusPercentage = "percentDone"
+	migrationStatusLastUpdate = "statusLastUpdated"
 )
 
 type migrateUserWorkUnit struct {
@@ -98,7 +102,14 @@ func UnmigrateAdGUIDUsersOnce(sc *config.ScaledContext) error {
 		case activedirectory.StatusMigrationFinished:
 			logrus.Debugf("[%v] ad-guid migration has already been completed, refusing to run again at startup", migrateAdUserOperation)
 			return nil
+		case activedirectory.StatusMigrationFinishedWithMissing:
+			logrus.Infof("[%v] ad-guid migration has already been completed. To clean-up missing users, you can run the utility manually", migrateAdUserOperation)
+			return nil
+		case activedirectory.StatusMigrationFinishedWithSkipped:
+			logrus.Infof("[%v] ad-guid migration has already been completed. To try and resolve skipped users, you can run the utility manually", migrateAdUserOperation)
+			return nil
 		}
+
 	}
 	return UnmigrateAdGUIDUsers(&sc.RESTConfig, false, false)
 }
@@ -135,7 +146,10 @@ func UnmigrateAdGUIDUsers(clientConfig *restclient.Config, dryRun bool, deleteMi
 	}
 	defer lConn.Close()
 
+	// set the status to running and reset the unmigrated fields
 	err = updateMigrationStatus(sc, activedirectory.StatusMigrationField, activedirectory.StatusMigrationRunning)
+	updateUnmigratedUsers("", migrateStatusSkipped, true, sc)
+	updateUnmigratedUsers("", migrateStatusMissing, true, sc)
 	if err != nil {
 		return fmt.Errorf("unable to update migration status configmap: %v", err)
 	}
@@ -165,19 +179,19 @@ func UnmigrateAdGUIDUsers(clientConfig *restclient.Config, dryRun bool, deleteMi
 
 	for _, user := range skippedUsers {
 		logrus.Errorf("[%v] unable to migrate user '%v' due to a connection failure; this user will be skipped", migrateAdUserOperation, user.originalUser.Name)
-		updateUnmigratedUsers(user.originalUser.Name, migrateStatusSkipped, sc)
+		updateUnmigratedUsers(user.originalUser.Name, migrateStatusSkipped, false, sc)
 	}
 	for _, missingUser := range missingUsers {
 		if deleteMissingUsers && !dryRun {
 			logrus.Infof("[%v] user '%v' with GUID '%v' does not seem to exist in Active Directory. deleteMissingUsers is true, proceeding to delete this user permanently", migrateAdUserOperation, missingUser.originalUser.Name, missingUser.guid)
-			updateUnmigratedUsers(missingUser.originalUser.Name, migrateStatusMissing, sc)
+			updateUnmigratedUsers(missingUser.originalUser.Name, migrateStatusMissing, false, sc)
 			err = sc.Management.Users("").Delete(missingUser.originalUser.Name, &metav1.DeleteOptions{})
 			if err != nil {
 				logrus.Errorf("[%v] failed to delete missing user '%v' with: %v", migrateAdUserOperation, missingUser.originalUser.Name, err)
 			}
 		} else {
 			logrus.Errorf("[%v] User '%v' with GUID '%v' does not seem to exist in Active Directory. this user will be skipped", migrateAdUserOperation, missingUser.originalUser.Name, missingUser.guid)
-			updateUnmigratedUsers(missingUser.originalUser.Name, migrateStatusMissing, sc)
+			updateUnmigratedUsers(missingUser.originalUser.Name, migrateStatusMissing, false, sc)
 		}
 	}
 
@@ -223,7 +237,17 @@ func UnmigrateAdGUIDUsers(clientConfig *restclient.Config, dryRun bool, deleteMi
 		}
 	}
 
-	err = updateMigrationStatus(sc, activedirectory.StatusMigrationField, activedirectory.StatusMigrationFinished)
+	// If we have skipped users, that status will be reported as the overall status
+	// since that state is potentially resolvable by re-running the utility
+	var status string
+	if len(skippedUsers) > 0 {
+		status = activedirectory.StatusMigrationFinishedWithSkipped
+	} else if len(missingUsers) > 0 {
+		status = activedirectory.StatusMigrationFinishedWithMissing
+	} else {
+		status = activedirectory.StatusMigrationFinished
+	}
+	err = updateMigrationStatus(sc, activedirectory.StatusMigrationField, status)
 	if err != nil {
 		return fmt.Errorf("unable to update migration status configmap: %v", err)
 	}
@@ -394,6 +418,7 @@ func updateMigrationStatus(sc *config.ScaledContext, status string, value string
 		cm.Data = map[string]string{}
 	}
 	cm.Data[status] = value
+	cm.Data[migrationStatusLastUpdate] = metav1.Now().Format(time.RFC3339)
 
 	if _, err := sc.Core.ConfigMaps(activedirectory.StatusConfigMapNamespace).Update(cm); err != nil {
 		// If the ConfigMap does not exist, create it
@@ -404,27 +429,41 @@ func updateMigrationStatus(sc *config.ScaledContext, status string, value string
 			}
 		}
 	}
-
+	err = updateADConfigMigrationStatus(cm.Data, sc)
+	if err != nil {
+		return fmt.Errorf("unable to update AuthConfig status: %v", err)
+	}
 	return nil
 }
 
-// updateUnmigratedUsers will add a user to the list for the specified migration status in the migration status configmap
-func updateUnmigratedUsers(user string, status string, sc *config.ScaledContext) {
+// updateUnmigratedUsers will add a user to the list for the specified migration status in the migration status configmap.
+// If reset is set to true, it will empty the list.
+func updateUnmigratedUsers(user string, status string, reset bool, sc *config.ScaledContext) {
 	cm, err := sc.Core.ConfigMaps(activedirectory.StatusConfigMapNamespace).Get(activedirectory.StatusConfigMapName, metav1.GetOptions{})
 	if err != nil {
 		logrus.Errorf("[%v] unable to fetch configmap to update %v users: %v", migrateAdUserOperation, status, err)
 	}
-	currentList := cm.Data[status]
-	if currentList == "" {
-		currentList = currentList + user
+	var currentList string
+	if reset {
+		delete(cm.Data, status)
 	} else {
-		currentList = currentList + "," + user
+		currentList = cm.Data[status]
+		if currentList == "" {
+			currentList = currentList + user
+		} else {
+			currentList = currentList + "," + user
+		}
+		cm.Data[status] = currentList
 	}
-	cm.Data[status] = currentList
 
+	cm.Data[migrationStatusLastUpdate] = metav1.Now().Format(time.RFC3339)
 	if _, err := sc.Core.ConfigMaps(activedirectory.StatusConfigMapNamespace).Update(cm); err != nil {
 		if err != nil {
 			logrus.Errorf("[%v] unable to update migration status configmap: %v", migrateAdUserOperation, err)
 		}
+	}
+	err = updateADConfigMigrationStatus(cm.Data, sc)
+	if err != nil {
+		logrus.Errorf("unable to update AuthConfig status: %v", err)
 	}
 }

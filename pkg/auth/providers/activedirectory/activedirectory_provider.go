@@ -27,17 +27,19 @@ import (
 )
 
 const (
-	Name                     = "activedirectory"
-	UserScope                = Name + "_user"
-	GroupScope               = Name + "_group"
-	ObjectClass              = "objectClass"
-	MemberOfAttribute        = "memberOf"
-	StatusConfigMapName      = "ad-guid-migration"
-	StatusConfigMapNamespace = "cattle-system"
-	StatusMigrationField     = "ad-guid-migration-status"
-	StatusMigrationFinished  = "Finished"
-	StatusMigrationRunning   = "Running"
-	StatusLoginDisabled      = "login is disabled while migration is running"
+	Name                               = "activedirectory"
+	UserScope                          = Name + "_user"
+	GroupScope                         = Name + "_group"
+	ObjectClass                        = "objectClass"
+	MemberOfAttribute                  = "memberOf"
+	StatusConfigMapName                = "ad-guid-migration"
+	StatusConfigMapNamespace           = "cattle-system"
+	StatusMigrationField               = "ad-guid-migration-status"
+	StatusMigrationFinished            = "Finished"
+	StatusMigrationRunning             = "Running"
+	StatusMigrationFinishedWithSkipped = "FinishedWithSkipped"
+	StatusMigrationFinishedWithMissing = "FinishedWithMissing"
+	StatusLoginDisabled                = "login is disabled while migration is running"
 )
 
 var scopes = []string{UserScope, GroupScope}
