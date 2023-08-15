@@ -160,12 +160,12 @@ func UnmigrateAdGUIDUsers(clientConfig *restclient.Config, dryRun bool, deleteMi
 		updateUnmigratedUsers("", migrateStatusMissing, true, sc)
 		// If we return past this point, no matter how we got there, make sure we update the configmap to clear the
 		// status away from "running." If we fail to do this, we block AD-based logins indefinitely.
-		defer func(sc *config.ScaledContext, status string, value string) {
-			err := updateMigrationStatus(sc, status, value)
+		defer func(sc *config.ScaledContext, status string) {
+			err := updateMigrationStatus(sc, status, finalStatus)
 			if err != nil {
 				logrus.Errorf("[%v] unable to update migration status configmap: %v", migrateAdUserOperation, err)
 			}
-		}(sc, activedirectory.StatusMigrationField, finalStatus)
+		}(sc, activedirectory.StatusMigrationField)
 	}
 
 	users, err := sc.Management.Users("").List(metav1.ListOptions{})
