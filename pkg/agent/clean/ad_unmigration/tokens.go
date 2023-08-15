@@ -9,10 +9,37 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+func collectTokens(workunits *[]migrateUserWorkUnit, sc *config.ScaledContext) error {
+	tokenInterface := sc.Management.Tokens("")
+	tokenList, err := tokenInterface.List(metav1.ListOptions{})
+	if err != nil {
+		logrus.Errorf("[%v] unable to fetch token objects: %v", migrateAdUserOperation, err)
+		return err
+	}
+
+	for i, workunit := range *workunits {
+		guidPrincipal := activeDirectoryPrefix + workunit.guid
+		for _, token := range tokenList.Items {
+			if guidPrincipal == token.UserPrincipal.Name || workunit.originalUser.Name == token.UserID {
+				workunit.activeDirectoryTokens = append(workunit.activeDirectoryTokens, token)
+			} else {
+				for _, duplicateLocalUser := range workunit.duplicateUsers {
+					if localPrincipalID(duplicateLocalUser) == token.UserPrincipal.Name {
+						workunit.duplicateLocalTokens = append(workunit.duplicateLocalTokens, token)
+					}
+				}
+			}
+		}
+		(*workunits)[i] = workunit
+	}
+
+	return nil
+}
+
 func migrateTokens(workunit *migrateUserWorkUnit, sc *config.ScaledContext, dryRun bool) error {
 	tokenInterface := sc.Management.Tokens("")
 	dnPrincipalID := activeDirectoryPrefix + workunit.distinguishedName
-	for _, userToken := range workunit.guidTokens {
+	for _, userToken := range workunit.activeDirectoryTokens {
 		if dryRun {
 			logrus.Infof("[%v] DRY RUN: would migrate token '%v' from GUID principal '%v' to DN principal '%v'. "+
 				"Additionally, it would add an annotation, %v, indicating the former principalID of this token "+
@@ -70,32 +97,5 @@ func migrateTokens(workunit *migrateUserWorkUnit, sc *config.ScaledContext, dryR
 			}
 		}
 	}
-	return nil
-}
-
-func collectTokens(workunits *[]migrateUserWorkUnit, sc *config.ScaledContext) error {
-	tokenInterface := sc.Management.Tokens("")
-	tokenList, err := tokenInterface.List(metav1.ListOptions{})
-	if err != nil {
-		logrus.Errorf("[%v] unable to fetch token objects: %v", migrateAdUserOperation, err)
-		return err
-	}
-
-	for i, workunit := range *workunits {
-		guidPrincipal := activeDirectoryPrefix + workunit.guid
-		for _, token := range tokenList.Items {
-			if guidPrincipal == token.UserPrincipal.Name || workunit.originalUser.Name == token.UserID {
-				workunit.guidTokens = append(workunit.guidTokens, token)
-			} else {
-				for _, duplicateLocalUser := range workunit.duplicateUsers {
-					if localPrincipalID(duplicateLocalUser) == token.UserPrincipal.Name {
-						workunit.duplicateLocalTokens = append(workunit.duplicateLocalTokens, token)
-					}
-				}
-			}
-		}
-		(*workunits)[i] = workunit
-	}
-
 	return nil
 }

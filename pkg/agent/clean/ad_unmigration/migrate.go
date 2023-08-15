@@ -28,6 +28,7 @@ const (
 	migrateTokensOperation    = "migrate-ad-tokens"
 	migrateCrtbsOperation     = "migrate-ad-crtbs"
 	migratePrtbsOperation     = "migrate-ad-prtbs"
+	migrateGrbsOperation      = "migrate-ad-grbs"
 	activeDirectoryPrefix     = "activedirectory_user://"
 	localPrefix               = "local://"
 	adGUIDMigrationLabel      = "ad-guid-migration"
@@ -42,16 +43,21 @@ const (
 )
 
 type migrateUserWorkUnit struct {
-	distinguishedName    string
-	guid                 string
-	originalUser         *v3.User
-	duplicateUsers       []*v3.User
-	guidCRTBs            []v3.ClusterRoleTemplateBinding
+	distinguishedName string
+	guid              string
+	originalUser      *v3.User
+	duplicateUsers    []*v3.User
+
+	activeDirectoryCRTBs []v3.ClusterRoleTemplateBinding
 	duplicateLocalCRTBs  []v3.ClusterRoleTemplateBinding
-	guidPRTBs            []v3.ProjectRoleTemplateBinding
+
+	activeDirectoryPRTBs []v3.ProjectRoleTemplateBinding
 	duplicateLocalPRTBs  []v3.ProjectRoleTemplateBinding
-	guidTokens           []v3.Token
-	duplicateLocalTokens []v3.Token
+
+	duplicateLocalGRBs []v3.GlobalRoleBinding
+
+	activeDirectoryTokens []v3.Token
+	duplicateLocalTokens  []v3.Token
 }
 
 type missingUserWorkUnit struct {
@@ -152,6 +158,10 @@ func UnmigrateAdGUIDUsers(clientConfig *restclient.Config, dryRun bool, deleteMi
 	if err != nil {
 		return err
 	}
+	err = collectGRBs(&usersToMigrate, sc)
+	if err != nil {
+		return err
+	}
 
 	for _, user := range skippedUsers {
 		logrus.Errorf("[%v] unable to migrate user '%v' due to a connection failure; this user will be skipped", migrateAdUserOperation, user.originalUser.Name)
@@ -188,6 +198,11 @@ func UnmigrateAdGUIDUsers(clientConfig *restclient.Config, dryRun bool, deleteMi
 		err = migratePRTBs(&userToMigrate, sc, dryRun)
 		if err != nil {
 			logrus.Errorf("[%v] unable to migrate PRTBs for user '%v': %v", migrateAdUserOperation, userToMigrate.originalUser.Name, err)
+			continue
+		}
+		err = migrateGRBs(&userToMigrate, sc, dryRun)
+		if err != nil {
+			logrus.Errorf("[%v] unable to migrate GRBs for user '%v': %v", migrateAdUserOperation, userToMigrate.originalUser.Name, err)
 			continue
 		}
 		replaceGUIDPrincipalWithDn(userToMigrate.originalUser, userToMigrate.distinguishedName, userToMigrate.guid, dryRun)
