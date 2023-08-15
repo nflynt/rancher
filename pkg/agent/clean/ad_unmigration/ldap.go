@@ -286,3 +286,52 @@ func updateADConfigMigrationStatus(status map[string]string, sc *config.ScaledCo
 
 	return nil
 }
+
+func migrateAllowedUserPrincipals(workunits *[]migrateUserWorkUnit, sc *config.ScaledContext, dryRun bool) error {
+	authConfigObj, err := sc.Management.AuthConfigs("").ObjectClient().UnstructuredClient().Get("activedirectory", metav1.GetOptions{})
+	if err != nil {
+		logrus.Errorf("[%v] failed to obtain activedirecotry authConfigObj: %v", migrateAdUserOperation, err)
+		return err
+	}
+
+	// Create an empty unstructured object to hold the decoded JSON
+	storedADConfig := &unstructured.Unstructured{}
+	storedADConfig, ok := authConfigObj.(*unstructured.Unstructured)
+	if !ok {
+		return fmt.Errorf("[%v] expected unstructured authconfig, got %T", migrateAdUserOperation, authConfigObj)
+	}
+
+	unstructuredMaybeList := storedADConfig.UnstructuredContent()["allowedPrincipalIds"]
+	listOfMaybeStrings, ok := unstructuredMaybeList.([]interface{})
+	if !ok {
+		return fmt.Errorf("[%v] expected list for allowed principal ids, got %T", migrateAdUserOperation, unstructuredMaybeList)
+	}
+
+	adWorkUnitsByPrincipal := map[string]int{}
+	for i, workunit := range *workunits {
+		adWorkUnitsByPrincipal[activeDirectoryPrefix+workunit.guid] = i
+	}
+
+	for i, item := range listOfMaybeStrings {
+		principalId, ok := item.(string)
+		if !ok {
+			return fmt.Errorf("[%v] expected string for allowed principal id, found instead %T", migrateAdUserOperation, item)
+		}
+		if j, exists := adWorkUnitsByPrincipal[principalId]; exists {
+			newPrincipalId := activeDirectoryPrefix + (*workunits)[j].distinguishedName
+			if dryRun {
+				logrus.Infof("[%v] DRY RUN: would migrate allowed user %v to %v", migrateAdUserOperation,
+					principalId, newPrincipalId)
+			} else {
+				listOfMaybeStrings[i] = newPrincipalId
+			}
+		}
+	}
+
+	if !dryRun {
+		storedADConfig.UnstructuredContent()["allowedPrincipalIds"] = listOfMaybeStrings
+	}
+
+	_, err = sc.Management.AuthConfigs("").ObjectClient().UnstructuredClient().Update("activedirectory", storedADConfig)
+	return err
+}

@@ -95,7 +95,12 @@ func scaledContext(restConfig *restclient.Config) (*config.ScaledContext, error)
 // UnmigrateAdGUIDUsersOnce will ensure that the migration script will run only once.  cycle through all users, ctrb, ptrb, tokens and migrate them to an
 // appropriate DN-based PrincipalID.
 func UnmigrateAdGUIDUsersOnce(sc *config.ScaledContext) error {
-	migrationConfigMap, _ := sc.Core.ConfigMaps(activedirectory.StatusConfigMapNamespace).GetNamespaced(activedirectory.StatusConfigMapNamespace, activedirectory.StatusConfigMapName, metav1.GetOptions{})
+	migrationConfigMap, err := sc.Core.ConfigMaps(activedirectory.StatusConfigMapNamespace).GetNamespaced(activedirectory.StatusConfigMapNamespace, activedirectory.StatusConfigMapName, metav1.GetOptions{})
+	if err != nil {
+		logrus.Errorf("[%v] unable to check unmigration configmap: %v", migrateAdUserOperation, err)
+		logrus.Errorf("[%v] cannot determine if it is safe to proceed. refusing to run", migrateAdUserOperation)
+		return nil
+	}
 	if migrationConfigMap != nil {
 		migrationStatus := migrationConfigMap.Data[activedirectory.StatusMigrationField]
 		switch migrationStatus {
@@ -129,7 +134,12 @@ func UnmigrateAdGUIDUsers(clientConfig *restclient.Config, dryRun bool, deleteMi
 		return err
 	}
 
-	migrationConfigMap, _ := sc.Core.ConfigMaps(activedirectory.StatusConfigMapNamespace).GetNamespaced(activedirectory.StatusConfigMapNamespace, activedirectory.StatusConfigMapName, metav1.GetOptions{})
+	migrationConfigMap, err := sc.Core.ConfigMaps(activedirectory.StatusConfigMapNamespace).GetNamespaced(activedirectory.StatusConfigMapNamespace, activedirectory.StatusConfigMapName, metav1.GetOptions{})
+	if err != nil {
+		logrus.Errorf("[%v] unable to check unmigration configmap: %v", migrateAdUserOperation, err)
+		logrus.Errorf("[%v] cannot determine if it is safe to proceed. refusing to run", migrateAdUserOperation)
+		return nil
+	}
 	if migrationConfigMap != nil {
 		migrationStatus := migrationConfigMap.Data[activedirectory.StatusMigrationField]
 		switch migrationStatus {
@@ -173,6 +183,10 @@ func UnmigrateAdGUIDUsers(clientConfig *restclient.Config, dryRun bool, deleteMi
 		return err
 	}
 	err = collectGRBs(&usersToMigrate, sc)
+	if err != nil {
+		return err
+	}
+	err = migrateAllowedUserPrincipals(&usersToMigrate, sc, dryRun)
 	if err != nil {
 		return err
 	}
