@@ -335,8 +335,9 @@ func identifyMigrationWorkUnits(users *v3.UserList, adConfig *v3.ActiveDirectory
 			continue
 		}
 		// If our LDAP connection has gone sour, we still need to log this user for reporting
+		userCopy := user.DeepCopy()
 		if ldapPermanentlyFailed {
-			skippedUsers = append(skippedUsers, skippedUserWorkUnit{guid: guid, originalUser: user.DeepCopy()})
+			skippedUsers = append(skippedUsers, skippedUserWorkUnit{guid: guid, originalUser: userCopy})
 		} else {
 			// Check for guid-based duplicates here. If we find one, we don't need to perform an other LDAP lookup.
 			if i, exists := knownGUIDWorkUnits[guid]; exists {
@@ -345,9 +346,9 @@ func identifyMigrationWorkUnits(users *v3.UserList, adConfig *v3.ActiveDirectory
 				// Make sure the oldest duplicate user is selected as the original
 				if usersToMigrate[i].originalUser.CreationTimestamp.Time.After(user.CreationTimestamp.Time) {
 					usersToMigrate[i].duplicateUsers = append(usersToMigrate[i].duplicateUsers, usersToMigrate[i].originalUser)
-					usersToMigrate[i].originalUser = user.DeepCopy()
+					usersToMigrate[i].originalUser = userCopy
 				} else {
-					usersToMigrate[i].duplicateUsers = append(usersToMigrate[i].duplicateUsers, user.DeepCopy())
+					usersToMigrate[i].duplicateUsers = append(usersToMigrate[i].duplicateUsers, userCopy)
 				}
 				continue
 			}
@@ -355,27 +356,27 @@ func identifyMigrationWorkUnits(users *v3.UserList, adConfig *v3.ActiveDirectory
 				logrus.Debugf("[%v] user %v is GUID-based (%v) and a duplicate of %v which is known to be missing",
 					identifyAdUserOperation, user.Name, guid, missingUsers[i].originalUser.Name)
 				// We're less picky about the age of the oldest user here, because we aren't going to deduplicate these
-				missingUsers[i].duplicateUsers = append(missingUsers[i].duplicateUsers, user.DeepCopy())
+				missingUsers[i].duplicateUsers = append(missingUsers[i].duplicateUsers, userCopy)
 				continue
 			}
 			dn, err := findDistinguishedNameWithRetries(guid, &sharedLConn, adConfig)
 			if errors.Is(err, LdapConnectionPermanentlyFailed{}) {
 				logrus.Warnf("[%v] LDAP connection has permanently failed! will continue to migrate previously identified users", identifyAdUserOperation)
-				skippedUsers = append(skippedUsers, skippedUserWorkUnit{guid: guid, originalUser: user.DeepCopy()})
+				skippedUsers = append(skippedUsers, skippedUserWorkUnit{guid: guid, originalUser: userCopy})
 				ldapPermanentlyFailed = true
 			} else if errors.Is(err, LdapFoundDuplicateGUID{}) {
 				logrus.Errorf("[%v] LDAP returned multiple users with GUID '%v'. this should not be possible, and may indicate a configuration error! this user will be skipped", identifyAdUserOperation, guid)
-				skippedUsers = append(skippedUsers, skippedUserWorkUnit{guid: guid, originalUser: user.DeepCopy()})
+				skippedUsers = append(skippedUsers, skippedUserWorkUnit{guid: guid, originalUser: userCopy})
 			} else if errors.Is(err, LdapErrorNotFound{}) {
 				logrus.Debugf("[%v] user %v is GUID-based (%v) and the Active Directory server doesn't know about it. marking it as missing", identifyAdUserOperation, user.Name, guid)
 				knownGUIDMissingUnits[guid] = len(missingUsers)
-				missingUsers = append(missingUsers, missingUserWorkUnit{guid: guid, originalUser: user.DeepCopy()})
+				missingUsers = append(missingUsers, missingUserWorkUnit{guid: guid, originalUser: userCopy})
 			} else {
 				logrus.Debugf("[%v] user %v is GUID-based (%v) and the Active Directory server knows it by the Distinguished Name '%v'", identifyAdUserOperation, user.Name, guid, dn)
 				knownGUIDWorkUnits[guid] = len(usersToMigrate)
 				knownDnWorkUnits[dn] = len(usersToMigrate)
 				var emptyDuplicateList []*v3.User
-				usersToMigrate = append(usersToMigrate, migrateUserWorkUnit{guid: guid, distinguishedName: dn, originalUser: user.DeepCopy(), duplicateUsers: emptyDuplicateList})
+				usersToMigrate = append(usersToMigrate, migrateUserWorkUnit{guid: guid, distinguishedName: dn, originalUser: userCopy, duplicateUsers: emptyDuplicateList})
 			}
 		}
 	}
@@ -413,11 +414,12 @@ func identifyMigrationWorkUnits(users *v3.UserList, adConfig *v3.ActiveDirectory
 			logrus.Debugf("[%v] user %v is DN-based (%v), and a duplicate of %v",
 				identifyAdUserOperation, user.Name, dn, usersToMigrate[i].originalUser.Name)
 			// Make sure the oldest duplicate user is selected as the original
+			userCopy := user.DeepCopy()
 			if usersToMigrate[i].originalUser.CreationTimestamp.Time.After(user.CreationTimestamp.Time) {
 				usersToMigrate[i].duplicateUsers = append(usersToMigrate[i].duplicateUsers, usersToMigrate[i].originalUser)
-				usersToMigrate[i].originalUser = &user
+				usersToMigrate[i].originalUser = userCopy
 			} else {
-				usersToMigrate[i].duplicateUsers = append(usersToMigrate[i].duplicateUsers, &user)
+				usersToMigrate[i].duplicateUsers = append(usersToMigrate[i].duplicateUsers, userCopy)
 			}
 		}
 	}
