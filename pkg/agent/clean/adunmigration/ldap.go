@@ -182,18 +182,21 @@ func adConfiguration(sc *config.ScaledContext) (*v3.ActiveDirectoryConfig, error
 	storedADConfig := &v3.ActiveDirectoryConfig{}
 	err = common.Decode(storedADConfigMap, storedADConfig)
 	if err != nil {
-		logrus.Debugf("[%v] errors while decoding stored AD config: %v", migrateAdUserOperation, err)
+		logrus.Errorf("[%v] errors while decoding stored AD config: %v", migrateAdUserOperation, err)
+		return nil, err
 	}
 
 	metadataMap, ok := storedADConfigMap["metadata"].(map[string]interface{})
 	if !ok {
 		logrus.Errorf("[%v] failed to retrieve ActiveDirectoryConfig, (second step), cannot read k8s Unstructured data %v", migrateAdUserOperation, err)
+		return nil, err
 	}
 
 	typemeta := &metav1.ObjectMeta{}
 	err = common.Decode(metadataMap, typemeta)
 	if err != nil {
-		logrus.Debugf("[%v] errors while decoding typemeta: %v", migrateAdUserOperation, err)
+		logrus.Errorf("[%v] errors while decoding typemeta: %v", migrateAdUserOperation, err)
+		return nil, err
 	}
 
 	storedADConfig.ObjectMeta = *typemeta
@@ -298,13 +301,12 @@ func migrateAllowedUserPrincipals(workunits *[]migrateUserWorkUnit, missingUsers
 	// this needs its own copy of the ad config, decoded with the ldap credentials fetched, so do that here
 	originalAdConfig, err := adConfiguration(sc)
 	if err != nil {
-		logrus.Errorf("[%v] failed to obtain activedirectory: %v", migrateAdUserOperation, err)
+		return fmt.Errorf("[%v] failed to obtain activedirectory config: %v", migrateAdUserOperation, err)
 	}
 
 	authConfigObj, err := sc.Management.AuthConfigs("").ObjectClient().UnstructuredClient().Get("activedirectory", metav1.GetOptions{})
 	if err != nil {
-		logrus.Errorf("[%v] failed to obtain activedirectory authConfigObj: %v", migrateAdUserOperation, err)
-		return err
+		return fmt.Errorf("[%v] failed to obtain activedirectory authConfigObj: %v", migrateAdUserOperation, err)
 	}
 
 	// Create an empty unstructured object to hold the decoded JSON
@@ -343,7 +345,8 @@ func migrateAllowedUserPrincipals(workunits *[]migrateUserWorkUnit, missingUsers
 
 		scope, err := getScope(principalID)
 		if err != nil {
-			return fmt.Errorf("[%v] found invalid principal ID in allowed user list, refusing to process: %v", migrateAdUserOperation, err)
+			logrus.Errorf("[%v] found invalid principal ID in allowed user list, refusing to process: %v", migrateAdUserOperation, err)
+			newPrincipalIDs = append(newPrincipalIDs, principalID)
 		}
 		if scope != activeDirectoryScope {
 			newPrincipalIDs = append(newPrincipalIDs, principalID)
@@ -368,12 +371,13 @@ func migrateAllowedUserPrincipals(workunits *[]migrateUserWorkUnit, missingUsers
 					guid, err := getExternalID(principalID)
 					if err != nil {
 						// this shouldn't be reachable, as getScope will fail first, but just for consistency...
-						return fmt.Errorf("[%v] found invalid principal ID in allowed user list, refusing to process: %v", migrateAdUserOperation, err)
+						logrus.Errorf("[%v] found invalid principal ID in allowed user list, refusing to process: %v", migrateAdUserOperation, err)
+						newPrincipalIDs = append(newPrincipalIDs, principalID)
 					} else {
 						dn, err := findDistinguishedNameWithRetries(guid, &sharedLConn, originalAdConfig)
 						if errors.Is(err, LdapConnectionPermanentlyFailed{}) || errors.Is(err, LdapFoundDuplicateGUID{}) {
 							// Whelp; keep this one as-is and yell about it
-							logrus.Errorf("[%v] ldap error when checking distinguished name for guid-based principal %v, skipping: %v", migrateAdUserOperation, principalID, err)
+							logrus.Errorf("[%v] ldap connection error when checking distinguished name for guid-based principal %v, skipping: %v", migrateAdUserOperation, principalID, err)
 							newPrincipalIDs = append(newPrincipalIDs, principalID)
 						} else if errors.Is(err, LdapErrorNotFound{}) {
 							if !deleteMissingUsers {

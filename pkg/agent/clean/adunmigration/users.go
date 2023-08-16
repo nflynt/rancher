@@ -64,7 +64,7 @@ func replaceGUIDPrincipalWithDn(user *v3.User, dn string, guid string, dryRun bo
 		// In dry run mode we will merely print the computed list and leave the original user object alone
 		logrus.Infof("[%v] DRY RUN: User '%v' with GUID '%v' would have new principals:", migrateAdUserOperation,
 			guid, user.Name)
-		for _, principalID := range user.PrincipalIDs {
+		for _, principalID := range principalIDs {
 			logrus.Infof("[%v] DRY RUN:    '%v'", migrateAdUserOperation, principalID)
 		}
 	} else {
