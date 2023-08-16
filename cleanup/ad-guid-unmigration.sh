@@ -229,7 +229,19 @@ fi
 echo "$yaml" | kubectl apply -f -
 
 # Get the pod ID to tail the logs
-pod_id=$(kubectl --namespace=cattle-system get pod -l job-name=cattle-cleanup-job -o jsonpath="{.items[0].metadata.name}")
+retry_interval=1
+max_retries=10
+retry_count=0
+pod_id=""
+while [ $retry_count -lt $max_retries ]; do
+    pod_id=$(kubectl --namespace=cattle-system get pod -l job-name=cattle-cleanup-job -o jsonpath="{.items[0].metadata.name}")
+    if [ -n "$pod_id" ]; then
+        break
+    else
+        sleep $retry_interval
+        ((retry_count++))
+    fi
+done
 
 # 600 is equal to 5 minutes, because the sleep interval is 0.5 seconds
 job_start_timeout=600
