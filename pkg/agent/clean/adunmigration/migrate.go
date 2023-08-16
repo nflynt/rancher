@@ -8,6 +8,8 @@ package adunmigration
 import (
 	"context"
 	"fmt"
+	"strconv"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -41,6 +43,7 @@ const (
 	AttributeObjectGUID       = "objectGUID"
 	migrateStatusSkipped      = "skippedUsers"
 	migrateStatusMissing      = "missingUsers"
+	migrateStatusCountSuffix  = "Count"
 	migrationStatusPercentage = "percentDone"
 	migrationStatusLastUpdate = "statusLastUpdated"
 )
@@ -485,6 +488,7 @@ func updateUnmigratedUsers(user string, status string, reset bool, sc *config.Sc
 	var currentList string
 	if reset {
 		delete(cm.Data, status)
+		delete(cm.Data, status+migrateStatusCountSuffix)
 	} else {
 		currentList = cm.Data[status]
 		if currentList == "" {
@@ -492,6 +496,8 @@ func updateUnmigratedUsers(user string, status string, reset bool, sc *config.Sc
 		} else {
 			currentList = currentList + "," + user
 		}
+		count := strconv.Itoa(len(strings.Split(currentList, ",")))
+		cm.Data[status+migrateStatusCountSuffix] = count
 		cm.Data[status] = currentList
 	}
 
