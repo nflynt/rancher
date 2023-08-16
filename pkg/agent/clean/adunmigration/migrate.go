@@ -203,11 +203,6 @@ func UnmigrateAdGUIDUsers(clientConfig *restclient.Config, dryRun bool, deleteMi
 		finalStatus = activedirectory.StatusMigrationFailed
 		return err
 	}
-	err = migrateAllowedUserPrincipals(&usersToMigrate, sc, dryRun)
-	if err != nil {
-		finalStatus = activedirectory.StatusMigrationFailed
-		return err
-	}
 
 	if len(missingUsers) > 0 {
 		finalStatus = activedirectory.StatusMigrationFinishedWithMissing
@@ -279,6 +274,12 @@ func UnmigrateAdGUIDUsers(clientConfig *restclient.Config, dryRun bool, deleteMi
 				logrus.Errorf("unable to update migration status: %v", err)
 			}
 		}
+	}
+
+	err = migrateAllowedUserPrincipals(&usersToMigrate, sc, dryRun)
+	if err != nil {
+		finalStatus = activedirectory.StatusMigrationFailed
+		return err
 	}
 
 	return nil
