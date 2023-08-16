@@ -3,7 +3,6 @@ package adunmigration
 import (
 	"bytes"
 	"crypto/x509"
-	"encoding/json"
 	"fmt"
 	"os"
 	"regexp"
@@ -265,17 +264,9 @@ func updateADConfigMigrationStatus(status map[string]string, sc *config.ScaledCo
 		return err
 	}
 
-	authConfigJSON, err := json.Marshal(authConfigObj)
-	if err != nil {
-		return fmt.Errorf("failed to marshal authConfig object to JSON: %v", err)
-	}
-
-	// Create an empty unstructured object to hold the decoded JSON
-	storedADConfig := &unstructured.Unstructured{}
-
-	// Decode the JSON string into the unstructured object because mapstructure is dropping the metadata
-	if err := json.Unmarshal(authConfigJSON, storedADConfig); err != nil {
-		return fmt.Errorf("failed to unmarshal JSON into storedADConfig: %v", err)
+	storedADConfig, ok := authConfigObj.(*unstructured.Unstructured)
+	if !ok {
+		return fmt.Errorf("[%v] expected unstructured authconfig, got %T", migrateAdUserOperation, authConfigObj)
 	}
 
 	// Update annotations with migration status
