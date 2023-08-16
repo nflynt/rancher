@@ -2,11 +2,15 @@ package adunmigration
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/sirupsen/logrus"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/wait"
 
 	v3 "github.com/rancher/rancher/pkg/apis/management.cattle.io/v3"
+	v3norman "github.com/rancher/rancher/pkg/generated/norman/management.cattle.io/v3"
 	"github.com/rancher/rancher/pkg/types/config"
 )
 
@@ -118,7 +122,78 @@ func collectGRBs(workunits *[]migrateUserWorkUnit, sc *config.ScaledContext) err
 	return nil
 }
 
-func migrateCRTBs(workunit *migrateUserWorkUnit, sc *config.ScaledContext, dryRun bool) error {
+func updateCRTB(crtbInterface v3norman.ClusterRoleTemplateBindingInterface, oldCrtb *v3.ClusterRoleTemplateBinding, userName string, principalID string) error {
+	newAnnotations := oldCrtb.Annotations
+	if newAnnotations == nil {
+		newAnnotations = make(map[string]string)
+	}
+	newAnnotations[adGUIDMigrationAnnotation] = oldCrtb.UserPrincipalName
+	newLabels := oldCrtb.Labels
+	if newLabels == nil {
+		newLabels = make(map[string]string)
+	}
+	newLabels[migrationPreviousName] = oldCrtb.Name
+	newLabels[adGUIDMigrationLabel] = migratedLabelValue
+	newCrtb := &v3.ClusterRoleTemplateBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:         "",
+			Namespace:    oldCrtb.ObjectMeta.Namespace,
+			GenerateName: "crtb-",
+			Annotations:  newAnnotations,
+			Labels:       newLabels,
+		},
+		ClusterName:       oldCrtb.ClusterName,
+		UserName:          userName,
+		RoleTemplateName:  oldCrtb.RoleTemplateName,
+		UserPrincipalName: principalID,
+	}
+
+	// If we get an internal error during any of these ops, there's a good chance the webhook is overwhelmed.
+	// We'll take the opportunity to rate limit ourselves and try again a few times.
+
+	backoff := wait.Backoff{
+		Duration: 5 * time.Second,
+		Factor:   1.1,
+		Jitter:   0.1,
+		Steps:    10,
+	}
+
+	err := wait.ExponentialBackoff(backoff, func() (finished bool, err error) {
+		_, err = crtbInterface.Create(newCrtb)
+		if err != nil {
+			if apierrors.IsInternalError(err) {
+				logrus.Errorf("[%v] internal error while creating crtb, will backoff and retry: %v", migrateCrtbsOperation, err)
+				return false, err
+			} else {
+				return true, fmt.Errorf("[%v] unable to create new CRTB: %w", migrateCrtbsOperation, err)
+			}
+		}
+		return true, nil
+	})
+	if err != nil {
+		return fmt.Errorf("[%v] permanent error when creating crtb, giving up: %v", migrateCrtbsOperation, err)
+	}
+
+	err = wait.ExponentialBackoff(backoff, func() (finished bool, err error) {
+		err = crtbInterface.DeleteNamespaced(oldCrtb.Namespace, oldCrtb.Name, &metav1.DeleteOptions{})
+		if err != nil {
+			if apierrors.IsInternalError(err) {
+				logrus.Errorf("[%v] internal error while deleting crtb, will backoff and retry: %v", migrateCrtbsOperation, err)
+				return false, err
+			} else {
+				return true, fmt.Errorf("[%v] unable to delete old CRTB: %w", migrateCrtbsOperation, err)
+			}
+		}
+		return true, nil
+	})
+	if err != nil {
+		return fmt.Errorf("[%v] permanent error when deleting crtb, giving up: %v", migrateCrtbsOperation, err)
+	}
+
+	return nil
+}
+
+func migrateCRTBs(workunit *migrateUserWorkUnit, sc *config.ScaledContext, dryRun bool) {
 	crtbInterface := sc.Management.ClusterRoleTemplateBindings("")
 	// First convert all GUID-based CRTBs to their equivalent Distinguished Name variants
 	dnPrincipalID := activeDirectoryPrefix + workunit.distinguishedName
@@ -129,37 +204,9 @@ func migrateCRTBs(workunit *migrateUserWorkUnit, sc *config.ScaledContext, dryRu
 				"labels, %v and %v, that will contain the name of the previous CRTB and indicate that this CRTB has been migrated.",
 				migrateCrtbsOperation, oldCrtb.Name, oldCrtb.UserPrincipalName, dnPrincipalID, adGUIDMigrationAnnotation, migrationPreviousName, adGUIDMigrationLabel)
 		} else {
-			newAnnotations := oldCrtb.Annotations
-			if newAnnotations == nil {
-				newAnnotations = make(map[string]string)
-			}
-			newAnnotations[adGUIDMigrationAnnotation] = oldCrtb.UserPrincipalName
-			newLabels := oldCrtb.Labels
-			if newLabels == nil {
-				newLabels = make(map[string]string)
-			}
-			newLabels[migrationPreviousName] = oldCrtb.Name
-			newLabels[adGUIDMigrationLabel] = migratedLabelValue
-			newCrtb := &v3.ClusterRoleTemplateBinding{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:         "",
-					Namespace:    oldCrtb.ObjectMeta.Namespace,
-					GenerateName: "crtb-",
-					Annotations:  newAnnotations,
-					Labels:       newLabels,
-				},
-				ClusterName:       oldCrtb.ClusterName,
-				UserName:          workunit.originalUser.Name,
-				RoleTemplateName:  oldCrtb.RoleTemplateName,
-				UserPrincipalName: dnPrincipalID,
-			}
-			_, err := crtbInterface.Create(newCrtb)
+			err := updateCRTB(crtbInterface, &oldCrtb, workunit.originalUser.Name, dnPrincipalID)
 			if err != nil {
-				return fmt.Errorf("[%v] unable to create new CRTB: %w", migrateCrtbsOperation, err)
-			}
-			err = sc.Management.ClusterRoleTemplateBindings("").DeleteNamespaced(oldCrtb.Namespace, oldCrtb.Name, &metav1.DeleteOptions{})
-			if err != nil {
-				return fmt.Errorf("[%v] unable to delete CRTB: %w", migrateCrtbsOperation, err)
+				logrus.Errorf("[%v] error while migrating tokens for user '%v': %v", migrateAdUserOperation, workunit.originalUser.Name, err)
 			}
 		}
 	}
@@ -173,44 +220,86 @@ func migrateCRTBs(workunit *migrateUserWorkUnit, sc *config.ScaledContext, dryRu
 				"labels, %v and %v, that will contain the name of the previous CRTB and indicate that this CRTB has been migrated.",
 				migrateCrtbsOperation, oldCrtb.Name, oldCrtb.UserPrincipalName, localPrincipalID, adGUIDMigrationAnnotation, migrationPreviousName, adGUIDMigrationLabel)
 		} else {
-			newAnnotations := oldCrtb.Annotations
-			if newAnnotations == nil {
-				newAnnotations = make(map[string]string)
-			}
-			newAnnotations[adGUIDMigrationAnnotation] = oldCrtb.UserPrincipalName
-			newLabels := oldCrtb.Labels
-			if newLabels == nil {
-				newLabels = make(map[string]string)
-			}
-			newLabels[migrationPreviousName] = oldCrtb.Name
-			newLabels[adGUIDMigrationLabel] = migratedLabelValue
-			newCrtb := &v3.ClusterRoleTemplateBinding{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:         "",
-					Namespace:    oldCrtb.ObjectMeta.Namespace,
-					GenerateName: "crtb-",
-					Annotations:  newAnnotations,
-					Labels:       newLabels,
-				},
-				ClusterName:       oldCrtb.ClusterName,
-				UserName:          workunit.originalUser.Name,
-				RoleTemplateName:  oldCrtb.RoleTemplateName,
-				UserPrincipalName: localPrincipalID,
-			}
-			_, err := crtbInterface.Create(newCrtb)
+			err := updateCRTB(crtbInterface, &oldCrtb, workunit.originalUser.Name, localPrincipalID)
 			if err != nil {
-				return fmt.Errorf("[%v] unable to create new CRTB: %w", migrateCrtbsOperation, err)
-			}
-			err = sc.Management.ClusterRoleTemplateBindings("").DeleteNamespaced(oldCrtb.Namespace, oldCrtb.Name, &metav1.DeleteOptions{})
-			if err != nil {
-				return fmt.Errorf("[%v] unable to delete CRTB: %w", migrateCrtbsOperation, err)
+				logrus.Errorf("[%v] error while migrating crtbs for user '%v': %v", migrateCrtbsOperation, workunit.originalUser.Name, err)
 			}
 		}
 	}
+}
+
+func updatePRTB(prtbInterface v3norman.ProjectRoleTemplateBindingInterface, oldPrtb *v3.ProjectRoleTemplateBinding, userName string, principalID string) error {
+	newAnnotations := oldPrtb.Annotations
+	if newAnnotations == nil {
+		newAnnotations = make(map[string]string)
+	}
+	newAnnotations[adGUIDMigrationAnnotation] = oldPrtb.UserPrincipalName
+	newLabels := oldPrtb.Labels
+	if newLabels == nil {
+		newLabels = make(map[string]string)
+	}
+	newLabels[migrationPreviousName] = oldPrtb.Name
+	newLabels[adGUIDMigrationLabel] = migratedLabelValue
+	newPrtb := &v3.ProjectRoleTemplateBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:         "",
+			Namespace:    oldPrtb.ObjectMeta.Namespace,
+			GenerateName: "prtb-",
+			Annotations:  newAnnotations,
+			Labels:       newLabels,
+		},
+		ProjectName:       oldPrtb.ProjectName,
+		UserName:          userName,
+		RoleTemplateName:  oldPrtb.RoleTemplateName,
+		UserPrincipalName: principalID,
+	}
+
+	// If we get an internal error during any of these ops, there's a good chance the webhook is overwhelmed.
+	// We'll take the opportunity to rate limit ourselves and try again a few times.
+
+	backoff := wait.Backoff{
+		Duration: 5 * time.Second,
+		Factor:   1.1,
+		Jitter:   0.1,
+		Steps:    10,
+	}
+
+	err := wait.ExponentialBackoff(backoff, func() (finished bool, err error) {
+		_, err = prtbInterface.Create(newPrtb)
+		if err != nil {
+			if apierrors.IsInternalError(err) {
+				logrus.Errorf("[%v] internal error while creating prtb, will backoff and retry: %v", migratePrtbsOperation, err)
+				return false, err
+			} else {
+				return true, fmt.Errorf("[%v] unable to create new PRTB: %w", migratePrtbsOperation, err)
+			}
+		}
+		return true, nil
+	})
+	if err != nil {
+		return fmt.Errorf("[%v] permanent error when creating prtb, giving up: %v", migratePrtbsOperation, err)
+	}
+
+	err = wait.ExponentialBackoff(backoff, func() (finished bool, err error) {
+		err = prtbInterface.DeleteNamespaced(oldPrtb.Namespace, oldPrtb.Name, &metav1.DeleteOptions{})
+		if err != nil {
+			if apierrors.IsInternalError(err) {
+				logrus.Errorf("[%v] internal error while deleting prtb, will backoff and retry: %v", migratePrtbsOperation, err)
+				return false, err
+			} else {
+				return true, fmt.Errorf("[%v] unable to delete old PRTB: %w", migratePrtbsOperation, err)
+			}
+		}
+		return true, nil
+	})
+	if err != nil {
+		return fmt.Errorf("[%v] permanent error when deleting prtb, giving up: %v", migratePrtbsOperation, err)
+	}
+
 	return nil
 }
 
-func migratePRTBs(workunit *migrateUserWorkUnit, sc *config.ScaledContext, dryRun bool) error {
+func migratePRTBs(workunit *migrateUserWorkUnit, sc *config.ScaledContext, dryRun bool) {
 	prtbInterface := sc.Management.ProjectRoleTemplateBindings("")
 	// First convert all GUID-based PRTBs to their equivalent Distinguished Name variants
 	dnPrincipalID := activeDirectoryPrefix + workunit.distinguishedName
@@ -219,40 +308,12 @@ func migratePRTBs(workunit *migrateUserWorkUnit, sc *config.ScaledContext, dryRu
 			logrus.Infof("[%v] DRY RUN: would migrate PRTB '%v' from GUID principal '%v' to DN principal '%v'. "+
 				"Additionally, an annotation, %v, would be added containing the principal being migrated from and"+
 				"labels, %v and %v, that will contain the name of the previous PRTB and indicate that this PRTB has been migrated.",
-				migrateCrtbsOperation, oldPrtb.Name, oldPrtb.UserPrincipalName, dnPrincipalID, adGUIDMigrationAnnotation, migrationPreviousName, adGUIDMigrationLabel)
+				migratePrtbsOperation, oldPrtb.Name, oldPrtb.UserPrincipalName, dnPrincipalID, adGUIDMigrationAnnotation, migrationPreviousName, adGUIDMigrationLabel)
 
 		} else {
-			newAnnotations := oldPrtb.Annotations
-			if newAnnotations == nil {
-				newAnnotations = make(map[string]string)
-			}
-			newAnnotations[adGUIDMigrationAnnotation] = oldPrtb.UserPrincipalName
-			newLabels := oldPrtb.Labels
-			if newLabels == nil {
-				newLabels = make(map[string]string)
-			}
-			newLabels[migrationPreviousName] = oldPrtb.Name
-			newLabels[adGUIDMigrationLabel] = migratedLabelValue
-			newPrtb := &v3.ProjectRoleTemplateBinding{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:         "",
-					Namespace:    oldPrtb.ObjectMeta.Namespace,
-					GenerateName: "prtb-",
-					Annotations:  newAnnotations,
-					Labels:       newLabels,
-				},
-				ProjectName:       oldPrtb.ProjectName,
-				UserName:          workunit.originalUser.Name,
-				RoleTemplateName:  oldPrtb.RoleTemplateName,
-				UserPrincipalName: dnPrincipalID,
-			}
-			_, err := prtbInterface.Create(newPrtb)
+			err := updatePRTB(prtbInterface, &oldPrtb, workunit.originalUser.Name, dnPrincipalID)
 			if err != nil {
-				return fmt.Errorf("[%v] unable to create new PRTB: %w", migratePrtbsOperation, err)
-			}
-			err = sc.Management.ProjectRoleTemplateBindings("").DeleteNamespaced(oldPrtb.Namespace, oldPrtb.Name, &metav1.DeleteOptions{})
-			if err != nil {
-				return fmt.Errorf("[%v] unable to delete PRTB: %w", migratePrtbsOperation, err)
+				logrus.Errorf("[%v] error while migrating prtbs for user '%v': %v", migratePrtbsOperation, workunit.originalUser.Name, err)
 			}
 		}
 	}
@@ -264,44 +325,15 @@ func migratePRTBs(workunit *migrateUserWorkUnit, sc *config.ScaledContext, dryRu
 			logrus.Infof("[%v] DRY RUN: would migrate PRTB '%v' from duplicate local user '%v' to original user '%v'"+
 				"Additionally, an annotation, %v, would be added containing the principal being migrated from and"+
 				"labels, %v and %v, that will contain the name of the previous PRTB and indicate that this PRTB has been migrated.",
-				migrateCrtbsOperation, oldPrtb.Name, oldPrtb.UserPrincipalName, localPrincipalID, adGUIDMigrationAnnotation, migrationPreviousName, adGUIDMigrationLabel)
+				migratePrtbsOperation, oldPrtb.Name, oldPrtb.UserPrincipalName, localPrincipalID, adGUIDMigrationAnnotation, migrationPreviousName, adGUIDMigrationLabel)
 
 		} else {
-			newAnnotations := oldPrtb.Annotations
-			if newAnnotations == nil {
-				newAnnotations = make(map[string]string)
-			}
-			newAnnotations[adGUIDMigrationAnnotation] = oldPrtb.UserPrincipalName
-			newLabels := oldPrtb.Labels
-			if newLabels == nil {
-				newLabels = make(map[string]string)
-			}
-			newLabels[migrationPreviousName] = oldPrtb.Name
-			newLabels[adGUIDMigrationLabel] = migratedLabelValue
-			newPrtb := &v3.ProjectRoleTemplateBinding{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:         "",
-					Namespace:    oldPrtb.ObjectMeta.Namespace,
-					GenerateName: "prtb-",
-					Annotations:  newAnnotations,
-					Labels:       newLabels,
-				},
-				ProjectName:       oldPrtb.ProjectName,
-				UserName:          workunit.originalUser.Name,
-				RoleTemplateName:  oldPrtb.RoleTemplateName,
-				UserPrincipalName: localPrincipalID,
-			}
-			_, err := prtbInterface.Create(newPrtb)
+			err := updatePRTB(prtbInterface, &oldPrtb, workunit.originalUser.Name, localPrincipalID)
 			if err != nil {
-				return fmt.Errorf("[%v] unable to create new PRTB: %w", migratePrtbsOperation, err)
-			}
-			err = sc.Management.ProjectRoleTemplateBindings("").DeleteNamespaced(oldPrtb.Namespace, oldPrtb.Name, &metav1.DeleteOptions{})
-			if err != nil {
-				return fmt.Errorf("[%v] unable to delete PRTB: %w", migratePrtbsOperation, err)
+				logrus.Errorf("[%v] error while migrating prtbs for user '%v': %v", migratePrtbsOperation, workunit.originalUser.Name, err)
 			}
 		}
 	}
-	return nil
 }
 
 func migrateGRBs(workunit *migrateUserWorkUnit, sc *config.ScaledContext, dryRun bool) error {

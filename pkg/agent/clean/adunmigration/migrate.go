@@ -247,16 +247,11 @@ func UnmigrateAdGUIDUsers(clientConfig *restclient.Config, dryRun bool, deleteMi
 			logrus.Errorf("[%v] unable to migrate tokens for user '%v': %v", migrateAdUserOperation, userToMigrate.originalUser.Name, err)
 			continue
 		}
-		err = migrateCRTBs(&userToMigrate, sc, dryRun)
-		if err != nil {
-			logrus.Errorf("[%v] unable to migrate CRTBs for user '%v': %v", migrateAdUserOperation, userToMigrate.originalUser.Name, err)
-			continue
-		}
-		err = migratePRTBs(&userToMigrate, sc, dryRun)
-		if err != nil {
-			logrus.Errorf("[%v] unable to migrate PRTBs for user '%v': %v", migrateAdUserOperation, userToMigrate.originalUser.Name, err)
-			continue
-		}
+		// Note: some resources may fail to migrate due to webhook constraints; this applies especially to bindings
+		// that refer to disabled templates, as rancher won't allow us to create the replacements. We'll log these
+		// errors, but do not consider them to be serious enough to stop processing the remainder of each user's work.
+		migrateCRTBs(&userToMigrate, sc, dryRun)
+		migratePRTBs(&userToMigrate, sc, dryRun)
 		err = migrateGRBs(&userToMigrate, sc, dryRun)
 		if err != nil {
 			logrus.Errorf("[%v] unable to migrate GRBs for user '%v': %v", migrateAdUserOperation, userToMigrate.originalUser.Name, err)
