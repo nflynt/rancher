@@ -41,6 +41,7 @@ const (
 	StatusMigrationFinishedWithMissing = "FinishedWithMissing"
 	StatusMigrationFailed              = "Failed"
 	StatusLoginDisabled                = "login is disabled while migration is running"
+	StatusACMigrationRunning           = "migration-ad-guid-migration-status"
 )
 
 var scopes = []string{UserScope, GroupScope}
@@ -92,19 +93,14 @@ func (p *adProvider) AuthenticateUser(ctx context.Context, input interface{}) (v
 		return v3.Principal{}, nil, "", errors.New("unexpected input type")
 	}
 
-	migrationConfigMap, err := p.configMaps.Get(StatusConfigMapNamespace, StatusConfigMapName)
-	if err != nil {
-		logrus.Infof("ad-guid-migration configmap does not exist, allowing logins by default: %v", err)
-	} else {
-		migrationStatus := migrationConfigMap.Data[StatusMigrationField]
-		if migrationStatus == StatusMigrationRunning {
-			return v3.Principal{}, nil, "", httperror.WrapAPIError(err, httperror.ClusterUnavailable, StatusLoginDisabled)
-		}
-	}
-
 	config, caPool, err := p.getActiveDirectoryConfig()
 	if err != nil {
 		return v3.Principal{}, nil, "", errors.New("can't find authprovider")
+	}
+
+	// If a migration is running, we need to block logins and indicate why we are doing so
+	if config.Annotations != nil && config.Annotations[StatusACMigrationRunning] == StatusMigrationRunning {
+		return v3.Principal{}, nil, "", httperror.WrapAPIError(err, httperror.ClusterUnavailable, StatusLoginDisabled)
 	}
 
 	principal, groupPrincipal, err := p.loginUser(login, config, caPool, false)
