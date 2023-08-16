@@ -275,7 +275,10 @@ func updateADConfigMigrationStatus(status map[string]string, sc *config.ScaledCo
 		annotations = make(map[string]string)
 	}
 	for annotation, value := range status {
-		annotations[adGUIDMigrationPrefix+annotation] = value
+		// We do not mirror the actual user lists to the AuthConfig
+		if annotation != migrateStatusSkipped && annotation != migrateStatusMissing {
+			annotations[adGUIDMigrationPrefix+annotation] = value
+		}
 	}
 	storedADConfig.SetAnnotations(annotations)
 
