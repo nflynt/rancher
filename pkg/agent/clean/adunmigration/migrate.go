@@ -30,6 +30,7 @@ const (
 	migrateCrtbsOperation     = "migrate-ad-crtbs"
 	migratePrtbsOperation     = "migrate-ad-prtbs"
 	migrateGrbsOperation      = "migrate-ad-grbs"
+	activeDirectoryScope      = "activedirectory_user"
 	activeDirectoryPrefix     = "activedirectory_user://"
 	localPrefix               = "local://"
 	adGUIDMigrationLabel      = "ad-guid-migration"
@@ -276,7 +277,7 @@ func UnmigrateAdGUIDUsers(clientConfig *restclient.Config, dryRun bool, deleteMi
 		}
 	}
 
-	err = migrateAllowedUserPrincipals(&usersToMigrate, sc, dryRun)
+	err = migrateAllowedUserPrincipals(&usersToMigrate, &missingUsers, sc, dryRun, deleteMissingUsers)
 	if err != nil {
 		finalStatus = activedirectory.StatusMigrationFailed
 		return err

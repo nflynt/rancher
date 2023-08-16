@@ -111,3 +111,11 @@ func getExternalID(principalID string) (string, error) {
 	}
 	return parts[1], nil
 }
+
+func getScope(principalID string) (string, error) {
+	parts := strings.Split(principalID, "://")
+	if len(parts) != 2 {
+		return "", fmt.Errorf("[%v] failed to parse invalid principalID: %v", identifyAdUserOperation, principalID)
+	}
+	return parts[0], nil
+}

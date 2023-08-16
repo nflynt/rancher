@@ -169,7 +169,7 @@ func adConfiguration(sc *config.ScaledContext) (*v3.ActiveDirectoryConfig, error
 
 	authConfigObj, err := authConfigs.ObjectClient().UnstructuredClient().Get("activedirectory", metav1.GetOptions{})
 	if err != nil {
-		logrus.Errorf("[%v] failed to obtain activedirecotry authConfigObj: %v", migrateAdUserOperation, err)
+		logrus.Errorf("[%v] failed to obtain activedirectory authConfigObj: %v", migrateAdUserOperation, err)
 		return nil, err
 	}
 
@@ -297,10 +297,19 @@ func updateADConfigMigrationStatus(status map[string]string, sc *config.ScaledCo
 	return nil
 }
 
-func migrateAllowedUserPrincipals(workunits *[]migrateUserWorkUnit, sc *config.ScaledContext, dryRun bool) error {
+func migrateAllowedUserPrincipals(workunits *[]migrateUserWorkUnit, missingUsers *[]missingUserWorkUnit, sc *config.ScaledContext, dryRun bool, deleteMissingUsers bool) error {
+	// because we might process users in this list that have never logged in, we may need to perform LDAP
+	// lookups on the spot to see what their associated DN should be
+	sharedLConn := sharedLdapConnection{}
+	// this needs its own copy of the ad config, decoded with the ldap credentials fetched, so do that here
+	originalAdConfig, err := adConfiguration(sc)
+	if err != nil {
+		logrus.Errorf("[%v] failed to obtain activedirectory: %v", migrateAdUserOperation, err)
+	}
+
 	authConfigObj, err := sc.Management.AuthConfigs("").ObjectClient().UnstructuredClient().Get("activedirectory", metav1.GetOptions{})
 	if err != nil {
-		logrus.Errorf("[%v] failed to obtain activedirecotry authConfigObj: %v", migrateAdUserOperation, err)
+		logrus.Errorf("[%v] failed to obtain activedirectory authConfigObj: %v", migrateAdUserOperation, err)
 		return err
 	}
 
@@ -310,7 +319,8 @@ func migrateAllowedUserPrincipals(workunits *[]migrateUserWorkUnit, sc *config.S
 		return fmt.Errorf("[%v] expected unstructured authconfig, got %T", migrateAdUserOperation, authConfigObj)
 	}
 
-	unstructuredMaybeList := storedADConfig.UnstructuredContent()["allowedPrincipalIds"]
+	unstructuredMap := storedADConfig.UnstructuredContent()
+	unstructuredMaybeList := unstructuredMap["allowedPrincipalIds"]
 	listOfMaybeStrings, ok := unstructuredMaybeList.([]interface{})
 	if !ok {
 		return fmt.Errorf("[%v] expected list for allowed principal ids, got %T", migrateAdUserOperation, unstructuredMaybeList)
@@ -320,27 +330,89 @@ func migrateAllowedUserPrincipals(workunits *[]migrateUserWorkUnit, sc *config.S
 	for i, workunit := range *workunits {
 		adWorkUnitsByPrincipal[activeDirectoryPrefix+workunit.guid] = i
 	}
+	missingWorkUnitsByPrincipal := map[string]int{}
+	for i, workunit := range *missingUsers {
+		adWorkUnitsByPrincipal[activeDirectoryPrefix+workunit.guid] = i
+	}
 
-	for i, item := range listOfMaybeStrings {
+	// we can deduplicate this list while we're at it, so we don't accidentally end up with twice the DNs
+	var newPrincipalIDs []string
+	var knownDnIDs = map[string]string{}
+
+	for _, item := range listOfMaybeStrings {
 		principalID, ok := item.(string)
 		if !ok {
+			// ... what? we got a non-string?
+			// this is weird enough that we should consider it a hard failure for investigation
 			return fmt.Errorf("[%v] expected string for allowed principal id, found instead %T", migrateAdUserOperation, item)
 		}
-		if j, exists := adWorkUnitsByPrincipal[principalID]; exists {
-			newPrincipalID := activeDirectoryPrefix + (*workunits)[j].distinguishedName
-			if dryRun {
-				logrus.Infof("[%v] DRY RUN: would migrate allowed user %v to %v", migrateAdUserOperation,
-					principalID, newPrincipalID)
+
+		scope, err := getScope(principalID)
+		if err != nil {
+			return fmt.Errorf("[%v] found invalid principal ID in allowed user list, refusing to process: %v", migrateAdUserOperation, err)
+		}
+		if scope != activeDirectoryScope {
+			newPrincipalIDs = append(newPrincipalIDs, principalID)
+		} else {
+			if !isGUID(principalID) {
+				// This must be a DN-based principal; add it to the new list
+				knownDnIDs[principalID] = principalID
 			} else {
-				listOfMaybeStrings[i] = newPrincipalID
+				if j, exists := adWorkUnitsByPrincipal[principalID]; exists {
+					// This user is known and was just migrated to DN, so add their DN-based principal to the list
+					newPrincipalID := activeDirectoryPrefix + (*workunits)[j].distinguishedName
+					newPrincipalIDs = append(newPrincipalIDs, newPrincipalID)
+					knownDnIDs[newPrincipalID] = newPrincipalID
+				} else if _, exists := missingWorkUnitsByPrincipal[principalID]; exists {
+					// This user is known to be missing, so we don't need to perform an LDAP lookup, we can just
+					// action accordingly
+					if !deleteMissingUsers {
+						newPrincipalIDs = append(newPrincipalIDs, principalID)
+					}
+				} else {
+					// We didn't process a user object for this GUID-based user. We need to perform an ldap
+					// lookup on the spot and figure out if they have an associated DN
+					guid, err := getExternalID(principalID)
+					if err != nil {
+						// this shouldn't be reachable, as getScope will fail first, but just for consistency...
+						return fmt.Errorf("[%v] found invalid principal ID in allowed user list, refusing to process: %v", migrateAdUserOperation, err)
+					} else {
+						dn, err := findDistinguishedNameWithRetries(guid, &sharedLConn, originalAdConfig)
+						if errors.Is(err, LdapConnectionPermanentlyFailed{}) || errors.Is(err, LdapFoundDuplicateGUID{}) {
+							// Whelp; keep this one as-is and yell about it
+							logrus.Errorf("[%v] ldap error when checking distinguished name for guid-based principal %v, skipping: %v", migrateAdUserOperation, principalID, err)
+							newPrincipalIDs = append(newPrincipalIDs, principalID)
+						} else if errors.Is(err, LdapErrorNotFound{}) {
+							if !deleteMissingUsers {
+								newPrincipalIDs = append(newPrincipalIDs, principalID)
+							}
+						} else {
+							newPrincipalID := activeDirectoryPrefix + dn
+							newPrincipalIDs = append(newPrincipalIDs, newPrincipalID)
+							knownDnIDs[newPrincipalID] = newPrincipalID
+						}
+					}
+				}
 			}
 		}
 	}
 
-	if !dryRun {
-		storedADConfig.UnstructuredContent()["allowedPrincipalIds"] = listOfMaybeStrings
+	// Now that we're through processing the list and dealing with any duplicates, append the new DN-based principals
+	// to the end of the list
+	for _, principalID := range knownDnIDs {
+		newPrincipalIDs = append(newPrincipalIDs, principalID)
 	}
 
-	_, err = sc.Management.AuthConfigs("").ObjectClient().UnstructuredClient().Update("activedirectory", storedADConfig)
+	if !dryRun {
+		unstructuredMap["allowedPrincipalIds"] = newPrincipalIDs
+		storedADConfig.SetUnstructuredContent(unstructuredMap)
+
+		_, err = sc.Management.AuthConfigs("").ObjectClient().UnstructuredClient().Update("activedirectory", storedADConfig)
+	} else {
+		logrus.Infof("[%v] DRY RUN: new allowed user list will contain these principal IDs:", migrateAdUserOperation)
+		for _, principalID := range newPrincipalIDs {
+			logrus.Infof("[%v]   DRY RUN: '%v'", migrateAdUserOperation, principalID)
+		}
+	}
 	return err
 }
