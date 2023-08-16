@@ -49,6 +49,9 @@ func updateModifiedUser(workunit migrateUserWorkUnit, sc *config.ScaledContext) 
 }
 
 func replaceGUIDPrincipalWithDn(user *v3.User, dn string, guid string, dryRun bool) {
+	// It's weird for a single user to have more than just an AD and a Local principal ID, but it *can* happen
+	// if Rancher has used more than one auth provider over its history. Here we'll keep all principal IDs
+	// that are unrelated to AD
 	var principalIDs []string
 	for _, principalID := range user.PrincipalIDs {
 		if !strings.HasPrefix(principalID, activeDirectoryPrefix) {
@@ -56,16 +59,16 @@ func replaceGUIDPrincipalWithDn(user *v3.User, dn string, guid string, dryRun bo
 		}
 	}
 	principalIDs = append(principalIDs, activeDirectoryPrefix+dn)
-	user.PrincipalIDs = principalIDs
 
-	// In dry run mode (and while debugging) we want to print the before/after state of the user principals
 	if dryRun {
-		logrus.Infof("[%v] User '%v' with GUID '%v' would have new principals:", migrateAdUserOperation,
+		// In dry run mode we will merely print the computed list and leave the original user object alone
+		logrus.Infof("[%v] DRY RUN: User '%v' with GUID '%v' would have new principals:", migrateAdUserOperation,
 			guid, user.Name)
 		for _, principalID := range user.PrincipalIDs {
-			logrus.Infof("[%v]     '%v'", migrateAdUserOperation, principalID)
+			logrus.Infof("[%v] DRY RUN:    '%v'", migrateAdUserOperation, principalID)
 		}
 	} else {
+		user.PrincipalIDs = principalIDs
 		logrus.Debugf("[%v] User '%v' with GUID %v will have new principals:", migrateAdUserOperation,
 			guid, user.Name)
 		for _, principalID := range user.PrincipalIDs {
