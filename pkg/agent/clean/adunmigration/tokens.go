@@ -64,7 +64,13 @@ func migrateTokens(workunit *migrateUserWorkUnit, sc *config.ScaledContext, dryR
 			}
 			latestToken.Labels[tokens.UserIDLabel] = workunit.originalUser.Name
 			latestToken.Labels[adGUIDMigrationLabel] = migratedLabelValue
+			// use the new dnPrincipalID for the token name
 			latestToken.UserPrincipal.Name = dnPrincipalID
+			// copy over other relevant fields to match the originalUser we want to keep
+			latestToken.UserPrincipal.UID = workunit.originalUser.UID
+			latestToken.UserPrincipal.LoginName = workunit.originalUser.Username
+			latestToken.UserPrincipal.DisplayName = workunit.originalUser.DisplayName
+
 			latestToken.UserID = workunit.originalUser.Name
 			_, err = tokenInterface.Update(latestToken)
 			if err != nil {
@@ -76,9 +82,8 @@ func migrateTokens(workunit *migrateUserWorkUnit, sc *config.ScaledContext, dryR
 	localPrincipalID := localPrefix + workunit.originalUser.Name
 	for _, userToken := range workunit.duplicateLocalTokens {
 		if dryRun {
-			logrus.Infof("[%v] DRY RUN: would migrate Token '%v' from duplicate local user '%v' to original user '%v'"+
-				"Additionally, it would add an annotation, %v, indicating the former principalID of this token "+
-				"and a label, %v, to indicate that this token has been migrated",
+			logrus.Infof("[%v] DRY RUN: would migrate Token '%v' from duplicate local user '%v' to original user '%v'. "+
+				"Would add annotation, %v, and label, %v, to indicate migration status",
 				migrateTokensOperation, userToken.Name, userToken.UserPrincipal.Name, localPrincipalID, adGUIDMigrationAnnotation, adGUIDMigrationLabel)
 		} else {
 			latestToken, err := tokenInterface.Get(userToken.Name, metav1.GetOptions{})
