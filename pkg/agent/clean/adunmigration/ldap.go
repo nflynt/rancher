@@ -361,7 +361,6 @@ func migrateAllowedUserPrincipals(workunits *[]migrateUserWorkUnit, missingUsers
 				if j, exists := adWorkUnitsByPrincipal[principalID]; exists {
 					// This user is known and was just migrated to DN, so add their DN-based principal to the list
 					newPrincipalID := activeDirectoryPrefix + (*workunits)[j].distinguishedName
-					newPrincipalIDs = append(newPrincipalIDs, newPrincipalID)
 					knownDnIDs[newPrincipalID] = newPrincipalID
 				} else if _, exists := missingWorkUnitsByPrincipal[principalID]; exists {
 					// This user is known to be missing, so we don't need to perform an LDAP lookup, we can just
@@ -388,7 +387,6 @@ func migrateAllowedUserPrincipals(workunits *[]migrateUserWorkUnit, missingUsers
 							}
 						} else {
 							newPrincipalID := activeDirectoryPrefix + dn
-							newPrincipalIDs = append(newPrincipalIDs, newPrincipalID)
 							knownDnIDs[newPrincipalID] = newPrincipalID
 						}
 					}
