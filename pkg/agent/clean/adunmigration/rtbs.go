@@ -22,9 +22,9 @@ func principalsToMigrate(workunits *[]migrateUserWorkUnit) (adWorkUnitsByPrincip
 	for i, workunit := range *workunits {
 		adWorkUnitsByPrincipal[activeDirectoryPrefix+workunit.guid] = i
 		for j := range workunit.duplicateUsers {
-			duplicateLocalWorkUnitsByPrincipal[activeDirectoryPrefix+workunit.guid] = j
-			duplicateLocalWorkUnitsByPrincipal[activeDirectoryPrefix+workunit.distinguishedName] = j
-			duplicateLocalWorkUnitsByPrincipal[localPrefix+workunit.duplicateUsers[j].Name] = j
+			duplicateLocalWorkUnitsByPrincipal[activeDirectoryPrefix+workunit.guid] = i
+			duplicateLocalWorkUnitsByPrincipal[activeDirectoryPrefix+workunit.distinguishedName] = i
+			duplicateLocalWorkUnitsByPrincipal[localPrefix+workunit.duplicateUsers[j].Name] = i
 		}
 	}
 
