@@ -164,9 +164,8 @@ func updateCRTB(crtbInterface v3norman.ClusterRoleTemplateBindingInterface, oldC
 			if apierrors.IsInternalError(err) {
 				logrus.Errorf("[%v] internal error while creating crtb, will backoff and retry: %v", migrateCrtbsOperation, err)
 				return false, err
-			} else {
-				return true, fmt.Errorf("[%v] unable to create new CRTB: %w", migrateCrtbsOperation, err)
 			}
+			return true, fmt.Errorf("[%v] unable to create new CRTB: %w", migrateCrtbsOperation, err)
 		}
 		return true, nil
 	})
@@ -180,9 +179,8 @@ func updateCRTB(crtbInterface v3norman.ClusterRoleTemplateBindingInterface, oldC
 			if apierrors.IsInternalError(err) {
 				logrus.Errorf("[%v] internal error while deleting crtb, will backoff and retry: %v", migrateCrtbsOperation, err)
 				return false, err
-			} else {
-				return true, fmt.Errorf("[%v] unable to delete old CRTB: %w", migrateCrtbsOperation, err)
 			}
+			return true, fmt.Errorf("[%v] unable to delete old CRTB: %w", migrateCrtbsOperation, err)
 		}
 		return true, nil
 	})
@@ -270,9 +268,8 @@ func updatePRTB(prtbInterface v3norman.ProjectRoleTemplateBindingInterface, oldP
 			if apierrors.IsInternalError(err) {
 				logrus.Errorf("[%v] internal error while creating prtb, will backoff and retry: %v", migratePrtbsOperation, err)
 				return false, err
-			} else {
-				return true, fmt.Errorf("[%v] unable to create new PRTB: %w", migratePrtbsOperation, err)
 			}
+			return true, fmt.Errorf("[%v] unable to create new PRTB: %w", migratePrtbsOperation, err)
 		}
 		return true, nil
 	})
@@ -286,9 +283,8 @@ func updatePRTB(prtbInterface v3norman.ProjectRoleTemplateBindingInterface, oldP
 			if apierrors.IsInternalError(err) {
 				logrus.Errorf("[%v] internal error while deleting prtb, will backoff and retry: %v", migratePrtbsOperation, err)
 				return false, err
-			} else {
-				return true, fmt.Errorf("[%v] unable to delete old PRTB: %w", migratePrtbsOperation, err)
 			}
+			return true, fmt.Errorf("[%v] unable to delete old PRTB: %w", migratePrtbsOperation, err)
 		}
 		return true, nil
 	})
