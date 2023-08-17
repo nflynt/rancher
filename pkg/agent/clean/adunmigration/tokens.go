@@ -2,9 +2,14 @@ package adunmigration
 
 import (
 	"fmt"
+	"time"
 
+	v3 "github.com/rancher/rancher/pkg/apis/management.cattle.io/v3"
+	v3norman "github.com/rancher/rancher/pkg/generated/norman/management.cattle.io/v3"
 	"github.com/sirupsen/logrus"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/wait"
 
 	"github.com/rancher/rancher/pkg/auth/tokens"
 	"github.com/rancher/rancher/pkg/types/config"
@@ -41,7 +46,59 @@ func collectTokens(workunits *[]migrateUserWorkUnit, sc *config.ScaledContext) e
 	return nil
 }
 
-func migrateTokens(workunit *migrateUserWorkUnit, sc *config.ScaledContext, dryRun bool) error {
+func updateToken(tokenInterface v3norman.TokenInterface, userToken v3.Token, newPrincipalID string, guid string, originalUser *v3.User) error {
+	latestToken, err := tokenInterface.Get(userToken.Name, metav1.GetOptions{})
+	if err != nil {
+		logrus.Errorf("[%v] token %s no longer exists: %v", migrateTokensOperation, userToken.Name, err)
+		return nil
+	}
+	if latestToken.Annotations == nil {
+		latestToken.Annotations = make(map[string]string)
+	}
+	latestToken.Annotations[adGUIDMigrationAnnotation] = guid
+	if latestToken.Labels == nil {
+		latestToken.Labels = make(map[string]string)
+	}
+	latestToken.Labels[tokens.UserIDLabel] = originalUser.Name
+	latestToken.Labels[adGUIDMigrationLabel] = migratedLabelValue
+	// use the new dnPrincipalID for the token name
+	latestToken.UserPrincipal.Name = newPrincipalID
+	// copy over other relevant fields to match the originalUser we want to keep
+	latestToken.UserPrincipal.UID = originalUser.UID
+	latestToken.UserPrincipal.LoginName = originalUser.Username
+	latestToken.UserPrincipal.DisplayName = originalUser.DisplayName
+	latestToken.UserID = originalUser.Name
+
+	// If we get an internal error during any of these ops, there's a good chance the webhook is overwhelmed.
+	// We'll take the opportunity to rate limit ourselves and try again a few times.
+
+	backoff := wait.Backoff{
+		Duration: 5 * time.Second,
+		Factor:   1.1,
+		Jitter:   0.1,
+		Steps:    10,
+	}
+
+	err = wait.ExponentialBackoff(backoff, func() (finished bool, err error) {
+		_, err = tokenInterface.Update(latestToken)
+		if err != nil {
+			if apierrors.IsInternalError(err) {
+				logrus.Errorf("[%v] internal error while updating token, will backoff and retry: %v", migrateTokensOperation, err)
+				return false, err
+			} else {
+				return true, fmt.Errorf("[%v] unable to update token: %w", migrateTokensOperation, err)
+			}
+		}
+		return true, nil
+	})
+	if err != nil {
+		return fmt.Errorf("[%v] permanent error when updating token, giving up: %v", migrateTokensOperation, err)
+	}
+
+	return nil
+}
+
+func migrateTokens(workunit *migrateUserWorkUnit, sc *config.ScaledContext, dryRun bool) {
 	tokenInterface := sc.Management.Tokens("")
 	dnPrincipalID := activeDirectoryPrefix + workunit.distinguishedName
 	for _, userToken := range workunit.activeDirectoryTokens {
@@ -51,30 +108,9 @@ func migrateTokens(workunit *migrateUserWorkUnit, sc *config.ScaledContext, dryR
 				"and a label, %v, to indicate that this token has been migrated",
 				migrateTokensOperation, userToken.Name, userToken.UserPrincipal.Name, dnPrincipalID, adGUIDMigrationAnnotation, adGUIDMigrationLabel)
 		} else {
-			latestToken, err := tokenInterface.Get(userToken.Name, metav1.GetOptions{})
+			err := updateToken(tokenInterface, userToken, dnPrincipalID, workunit.guid, workunit.originalUser)
 			if err != nil {
-				logrus.Errorf("[%v] token %s no longer exists: %v", migrateTokensOperation, userToken.Name, err)
-			}
-			if latestToken.Annotations == nil {
-				latestToken.Annotations = make(map[string]string)
-			}
-			latestToken.Annotations[adGUIDMigrationAnnotation] = workunit.guid
-			if latestToken.Labels == nil {
-				latestToken.Labels = make(map[string]string)
-			}
-			latestToken.Labels[tokens.UserIDLabel] = workunit.originalUser.Name
-			latestToken.Labels[adGUIDMigrationLabel] = migratedLabelValue
-			// use the new dnPrincipalID for the token name
-			latestToken.UserPrincipal.Name = dnPrincipalID
-			// copy over other relevant fields to match the originalUser we want to keep
-			latestToken.UserPrincipal.UID = workunit.originalUser.UID
-			latestToken.UserPrincipal.LoginName = workunit.originalUser.Username
-			latestToken.UserPrincipal.DisplayName = workunit.originalUser.DisplayName
-
-			latestToken.UserID = workunit.originalUser.Name
-			_, err = tokenInterface.Update(latestToken)
-			if err != nil {
-				return fmt.Errorf("[%v] unable to update token: %w", migrateTokensOperation, err)
+				logrus.Errorf("[%v] error while migrating tokens for user '%v': %v", migrateTokensOperation, workunit.originalUser.Name, err)
 			}
 		}
 	}
@@ -86,30 +122,10 @@ func migrateTokens(workunit *migrateUserWorkUnit, sc *config.ScaledContext, dryR
 				"Would add annotation, %v, and label, %v, to indicate migration status",
 				migrateTokensOperation, userToken.Name, userToken.UserPrincipal.Name, localPrincipalID, adGUIDMigrationAnnotation, adGUIDMigrationLabel)
 		} else {
-			latestToken, err := tokenInterface.Get(userToken.Name, metav1.GetOptions{})
+			err := updateToken(tokenInterface, userToken, localPrincipalID, workunit.guid, workunit.originalUser)
 			if err != nil {
-				// Uncommonly, old tokens can expire during script execution. If this happens a token we collect may
-				// be missing by the time we get around to processing the migration. Treat this as a soft error and
-				// resume processing the remainder of the tokens.
-				logrus.Warnf("[%v] token %s no longer exists: %v", migrateTokensOperation, userToken.Name, err)
-				continue
-			}
-			if latestToken.Annotations == nil {
-				latestToken.Annotations = make(map[string]string)
-			}
-			latestToken.Annotations[adGUIDMigrationAnnotation] = workunit.guid
-			if latestToken.Labels == nil {
-				latestToken.Labels = make(map[string]string)
-			}
-			latestToken.Labels[tokens.UserIDLabel] = workunit.originalUser.Name
-			latestToken.Labels[adGUIDMigrationLabel] = migratedLabelValue
-			latestToken.UserPrincipal.Name = localPrincipalID
-			latestToken.UserID = workunit.originalUser.Name
-			_, err = tokenInterface.Update(latestToken)
-			if err != nil {
-				return fmt.Errorf("[%v] unable to update token: %w", migrateTokensOperation, err)
+				logrus.Errorf("[%v] error while migrating tokens for user '%v': %v", migrateTokensOperation, workunit.originalUser.Name, err)
 			}
 		}
 	}
-	return nil
 }

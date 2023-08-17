@@ -206,7 +206,7 @@ func migrateCRTBs(workunit *migrateUserWorkUnit, sc *config.ScaledContext, dryRu
 		} else {
 			err := updateCRTB(crtbInterface, &oldCrtb, workunit.originalUser.Name, dnPrincipalID)
 			if err != nil {
-				logrus.Errorf("[%v] error while migrating tokens for user '%v': %v", migrateAdUserOperation, workunit.originalUser.Name, err)
+				logrus.Errorf("[%v] error while migrating CRTBs for user '%v': %v", migrateCrtbsOperation, workunit.originalUser.Name, err)
 			}
 		}
 	}
@@ -336,8 +336,15 @@ func migratePRTBs(workunit *migrateUserWorkUnit, sc *config.ScaledContext, dryRu
 	}
 }
 
-func migrateGRBs(workunit *migrateUserWorkUnit, sc *config.ScaledContext, dryRun bool) error {
+func migrateGRBs(workunit *migrateUserWorkUnit, sc *config.ScaledContext, dryRun bool) {
 	grbInterface := sc.Management.GlobalRoleBindings("")
+
+	backoff := wait.Backoff{
+		Duration: 5 * time.Second,
+		Factor:   1.1,
+		Jitter:   0.1,
+		Steps:    10,
+	}
 
 	for _, oldGrb := range workunit.duplicateLocalGRBs {
 		if dryRun {
@@ -363,15 +370,39 @@ func migrateGRBs(workunit *migrateUserWorkUnit, sc *config.ScaledContext, dryRun
 				GroupPrincipalName: oldGrb.GroupPrincipalName,
 				UserName:           workunit.originalUser.Name,
 			}
-			_, err := grbInterface.Create(newGrb)
+
+			err := wait.ExponentialBackoff(backoff, func() (finished bool, err error) {
+				_, err = grbInterface.Create(newGrb)
+				if err != nil {
+					if apierrors.IsInternalError(err) {
+						logrus.Errorf("[%v] internal error while creating GRB, will backoff and retry: %v", migrateGrbsOperation, err)
+						return false, err
+					} else {
+						return true, fmt.Errorf("[%v] unable to create new GRB: %w", migrateGrbsOperation, err)
+					}
+				}
+				return true, nil
+			})
 			if err != nil {
-				return fmt.Errorf("[%v] unable to create new GRB: %w", migrateGrbsOperation, err)
+				logrus.Errorf("[%v] permanent error when GRB prtb, giving up: %v", migrateGrbsOperation, err)
+				continue
 			}
-			err = sc.Management.GlobalRoleBindings("").Delete(oldGrb.Name, &metav1.DeleteOptions{})
+
+			err = wait.ExponentialBackoff(backoff, func() (finished bool, err error) {
+				err = sc.Management.GlobalRoleBindings("").Delete(oldGrb.Name, &metav1.DeleteOptions{})
+				if err != nil {
+					if apierrors.IsInternalError(err) {
+						logrus.Errorf("[%v] internal error while deleting GRB, will backoff and retry: %v", migrateGrbsOperation, err)
+						return false, err
+					} else {
+						return true, fmt.Errorf("[%v] unable to delete old GRB: %w", migrateGrbsOperation, err)
+					}
+				}
+				return true, nil
+			})
 			if err != nil {
-				return fmt.Errorf("[%v] unable to delete GRB: %w", migrateGrbsOperation, err)
+				logrus.Errorf("[%v] permanent error when deleting GRB, giving up: %v", migrateGrbsOperation, err)
 			}
 		}
 	}
-	return nil
 }

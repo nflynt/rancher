@@ -239,24 +239,13 @@ func UnmigrateAdGUIDUsers(clientConfig *restclient.Config, dryRun bool, deleteMi
 	}
 
 	for i, userToMigrate := range usersToMigrate {
-		// If any of the binding replacements fail, then the resulting rancher state for this user is inconsistent
-		//   and we should NOT attempt to modify the user or delete any of its duplicates. This situation is unusual
-		//   and must be investigated by the local admin.
-		err := migrateTokens(&userToMigrate, sc, dryRun)
-		if err != nil {
-			logrus.Errorf("[%v] unable to migrate tokens for user '%v': %v", migrateAdUserOperation, userToMigrate.originalUser.Name, err)
-			continue
-		}
 		// Note: some resources may fail to migrate due to webhook constraints; this applies especially to bindings
 		// that refer to disabled templates, as rancher won't allow us to create the replacements. We'll log these
 		// errors, but do not consider them to be serious enough to stop processing the remainder of each user's work.
 		migrateCRTBs(&userToMigrate, sc, dryRun)
 		migratePRTBs(&userToMigrate, sc, dryRun)
-		err = migrateGRBs(&userToMigrate, sc, dryRun)
-		if err != nil {
-			logrus.Errorf("[%v] unable to migrate GRBs for user '%v': %v", migrateAdUserOperation, userToMigrate.originalUser.Name, err)
-			continue
-		}
+		migrateGRBs(&userToMigrate, sc, dryRun)
+		migrateTokens(&userToMigrate, sc, dryRun)
 		replaceGUIDPrincipalWithDn(userToMigrate.originalUser, userToMigrate.distinguishedName, userToMigrate.guid, dryRun)
 
 		if dryRun {
